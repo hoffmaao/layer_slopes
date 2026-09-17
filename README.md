@@ -45,6 +45,8 @@ OPR front end and a regression suite.
 | `RollingRadon.m` | Window forced square in samples. | Along-track extent needs enough traces to define a dip; vertical extent needs to stay short enough to avoid system power drift. Now accepts `[horizontal vertical]`. |
 | `RollingRadon.m` | Continuity filter **substitutes** `last_val` for a deviating window and carries it forward. | Paints long constant-dip columns of fabricated values through the field. Default is now to keep the measurement (`vr = 1`). |
 | `radon_ndh.m` | Rebuilt the Radon correction images and Gaussian filters on **every call**, though they depend only on window size. | Three extra Radon transforms per window. Now cached; the Ridge A frame went from minutes to ~35 s at a 10× finer grid. |
+| `radon_ndh.m` | Angular search step hard-coded at **0.1 deg**. | Interior layers dip ~0.1 deg, so the whole signal fell inside one search increment and every window returned 0 or +/-0.1. Now an argument (`dip_step`). |
+| `RollingRadon.m` | Chunk width fixed at 1000 columns regardless of the window. | A wider window makes `roll_steps` negative, so the loop never runs, `opt_x` is never created, and the function dies in its own epilogue having silently processed nothing. Long windows are exactly what sub-degree dips need. |
 | `regrid.m` | Calls `cice_import`, which the public repo does not ship. | A clean checkout cannot regrid radar data. Included here. |
 
 `RollingRadon_CReSIS.m` is **not** carried over. It opened `load(filename);
@@ -72,11 +74,15 @@ scalar and then sub-indexed the result, hard-coded Windows paths, and called
 - **Grids isotropically, once.** Radon needs square pixels. Native sampling is
   0.14 m vertically against 5.9 m along track, so `radon_ndh` would otherwise
   upsample every window ~42×.
-- **Conditions for layering, not gain.** A depth high-pass removes the power
-  envelope (only ~10% of the variance in this frame sits below 4 m
-  wavelength); per-trace balancing removes profile-to-profile gain swings that
-  show up as vertical striping. Both are stronger linear features than the
-  stratigraphy, and the Radon transform will lock onto either.
+- **Conditions for layering, not gain.** A depth low-pass (`smooth_len`)
+  suppresses structure finer than the layering; per-trace balancing removes
+  profile-to-profile gain swings that show up as vertical striping and that
+  the Radon will otherwise lock onto. An optional depth high-pass
+  (`detrend_len`, off by default) removes the long-wavelength power envelope
+  when it dominates a window.
+- **Exaggerates vertically.** Interior layers dip ~0.1 deg, which is below
+  one range cell of displacement across any tractable window. See
+  `vert_exag` under *Choosing the parameters*.
 - **Gates honestly.** The whole window must sit inside the ice column, not
   just its centre, and rejection reasons are returned in `R.status`.
 
@@ -85,21 +91,60 @@ scalar and then sub-indexed the result, hard-coded Windows paths, and called
 ## Requirements
 
 MATLAB with the Image Processing (`radon`), Statistics (`normpdf`) and Signal
-Processing toolboxes. Tested on R2024b.
+Processing toolboxes. Tested on R2024b (`/opt/sw/matlab/2024b/bin/matlab` on
+the CReSIS machines). Nothing else - the Holschuh helpers are vendored in
+`src/`, including `cice_import.m`, which upstream does not ship.
 
-## Run it
+## Install and run on the CReSIS servers
 
-```matlab
-cd examples
-run_slopes_2025_Antarctica_Ground2
-```
-
-or headless on the CReSIS machines:
+Clone into your own scratch space and run in place. Echograms are opened
+read-only, and nothing is written outside the output directory you choose.
 
 ```bash
-matlab -batch "run_slopes_2025_Antarctica_Ground2"
-matlab -batch "frame='20260109_02_001'; run_slopes_2025_Antarctica_Ground2"
+ssh mem1                                    # or any CReSIS compute node
+cd /kucresis/scratch/$USER/scripts          # your scratch, not someone else's
+git clone https://github.com/hoffmaao/layer_slopes.git
+cd layer_slopes
 ```
+
+Check the install before pointing it at real data. The suite needs no
+external files and runs in a couple of minutes:
+
+```bash
+cd tests
+/opt/sw/matlab/2024b/bin/matlab -batch "run_tests"
+```
+
+Then run a profile. The examples resolve their own paths, so they work from
+any checkout location:
+
+```bash
+cd ../examples
+nice -n 10 /opt/sw/matlab/2024b/bin/matlab -batch \\
+    "maxNumCompThreads(8); run_slopes_2024_Antarctica_Ground2"
+```
+
+That processes the 20 km mega-dune profile `20250108_02_005` from
+`CSARP_post/CSARP_standard` - the same posted product `imb.picker` displays -
+and writes a `.mat` and a `.png` under
+`/kucresis/scratch/$USER/layer_slopes/products/`. Frame, product and output
+location can all be overridden on the command line:
+
+```bash
+matlab -batch "frame='20250108_02_001'; run_slopes_2024_Antarctica_Ground2"
+matlab -batch "out_dir='/kucresis/scratch/$USER/slopes'; run_slopes_2024_Antarctica_Ground2"
+matlab -batch "run_slopes_2025_Antarctica_Ground2"    # Ridge A, 2025 season
+```
+
+Long lines are worth detaching, since nothing needs a terminal:
+
+```bash
+nohup nice -n 10 /opt/sw/matlab/2024b/bin/matlab -batch \\
+    "run_slopes_2024_Antarctica_Ground2" > run.log 2>&1 &
+```
+
+`maxNumCompThreads(8)` and `nice` keep a shared node usable; neither is
+required for correctness.
 
 Directly:
 
@@ -142,6 +187,19 @@ cd tests && matlab -batch "run_tests"
 covers the unit bug, and `test_opr_units` drives the whole OPR path over a
 synthetic echogram with a known dip — including the all-NaN `Bottom` case.
 
+## Validation
+
+`tests/` covers the sign convention, the `regrid` unit bug, the whole OPR
+path over a synthetic echogram, and sub-degree recovery under vertical
+exaggeration.
+
+The check that matters is against a real picked profile. On
+`20250108_02_005` the horizon visible in `imb.picker` runs from ~1.85 us at
+0 km to ~1.45 us at 20 km - about 35 m of relief over 20,000 m, a dip of
+**-0.10 deg**. The solver returns a median of **-0.09 deg** (IQR -0.20 to
++0.01) over 443 solved windows, and the negative sign correctly says the
+layers shallow with increasing distance.
+
 ## Output
 
 `RollingRadon_OPR` returns, and saves, a struct:
@@ -161,7 +219,7 @@ synthetic echogram with a known dip — including the all-NaN `Bottom` case.
 ```
 src/      Holschuh's functions, with the fixes above
 opr/      OPR/CReSIS front end and the standard figure
-examples/ runnable driver for 2025_Antarctica_Ground2
-tests/    regression suite and diagnostics
+examples/ runnable drivers, one per season
+tests/    regression suite, plus diag_layering.m for siting the depth window
 docs/     attribution and the upstream README
 ```
