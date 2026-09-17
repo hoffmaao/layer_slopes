@@ -34,16 +34,16 @@ terms of redistribution are attached to it. The code is republished here with
 attribution, in the spirit of the upstream README's stated intent to make it
 "public and useful for folks who may want to do similar analysis", and with
 every modification marked. If you plan to build on this, contact Nick
-(Nick.Holschuh@gmail.com) — both to let him know and because several of the
+(Nick.Holschuh@gmail.com) - both to let him know and because several of the
 fixes below are worth folding back upstream.
 
 ## Files and their status
 
 | File | Status |
 |---|---|
-| `src/RollingRadon.m` | Holschuh, modified — see `%%% FIX:` / `%%% ADD:` comments |
-| `src/radon_ndh.m` | Holschuh, modified — sign convention, normalisation, tie/empty handling, descending axis, filter caching |
-| `src/regrid.m` | Holschuh, modified — mode-1 target spacing is a length, not a time |
+| `src/RollingRadon.m` | Holschuh, modified - see `%%% FIX:` / `%%% ADD:` comments |
+| `src/radon_ndh.m` | Holschuh, modified - sign convention, normalisation, tie/empty handling, descending axis, filter caching |
+| `src/regrid.m` | Holschuh, modified - mode-1 target spacing is a length, not a time |
 | `src/cice_import.m` | Written here (upstream ships it in a different repo) |
 | `src/b2r2.m`, `combvec.m`, `depth_shift.m`, `distance_vector.m`, `elevation_shift.m`, `exclude.m`, `find_nearest.m`, `interpNaN.m`, `lp.m`, `matrix_to_vector.m`, `plot_indicator_lines.m`, `pointdistance.m`, `polarstereo_fwd.m`, `rad2deg.m`, `value2value.m` | Holschuh, unmodified |
 | `opr/*` | Written here |
