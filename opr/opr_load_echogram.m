@@ -21,15 +21,15 @@ function D = opr_load_echogram(data_file, opt)
 %   .bed_twtt     [1 x nx]  bed pick (s), NaN where unavailable
 %   .bed_source   char
 %
-% THIS FUNCTION NEVER WRITES TO data_file. The original
-% RollingRadon_CReSIS.m opened with
+% THIS FUNCTION NEVER WRITES TO data_file. The older CReSIS driver opened
+% with
 %
 %       load(filename); clearvars ...; save(filename)
 %
-% which wrote the function's own arguments (filename, window, plotter,
-% movie) back into the shared OPR product. Any echogram that has been
-% through that code carries those stowaway variables; the check below
-% reports them rather than silently accepting a modified product.
+% which returns the function's own arguments (filename, window, plotter,
+% movie) to the shared OPR product. An echogram that has been through that
+% path carries those extra variables, so the check below reports them
+% rather than quietly accepting a modified product.
 %
 % See also ROLLINGRADON_OPR, OPR_LAYER_PATH
 

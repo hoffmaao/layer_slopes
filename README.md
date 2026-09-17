@@ -23,45 +23,70 @@ See `docs/ATTRIBUTION.md` for exactly what came from where and what changed.
 
 ## What this adds
 
-The published `SlopeExtraction_Radar` code does not run against a current OPR
-product, and its CReSIS driver (`RollingRadon_CReSIS.m`, in NDH_MatlabTools)
-cannot run at all. This repo carries that code with the defects fixed, plus an
-OPR front end and a regression suite.
+`SlopeExtraction_Radar` was published in 2017 alongside the paper, as a
+deliberate first step toward making the method usable by other people. Its
+README says so plainly:
 
-### Bugs fixed in the original code
+> I am still making sure this has all the dependencies required, but this is
+> my first step in trying to make the code public and useful for folks who
+> may want to do similar analysis. Apologies for any errors that come up --
+> feel free to contact me if so!
 
-| Where | Defect | Consequence |
+This repo takes that invitation up. The method is Nick's and is unchanged;
+what follows is the work of getting a 2017 research release to run against
+2025-era OPR products, plus a handful of genuine fixes that are worth
+sending back upstream. Most of the list is format drift and buried
+constants rather than anything wrong with the science.
+
+### Changes from the published release
+
+Every change is marked in place in the source with a `%%% FIX:` or
+`%%% ADD:` comment, so the diff against upstream is readable without a diff
+tool.
+
+**Worth folding back upstream.** These are real and would affect anyone
+using the public release today:
+
+| Where | Change | Why it matters |
 |---|---|---|
-| `radon_ndh.m` | Returned dip with the **sign inverted** relative to any stated convention. Nick's full NDH_MatlabTools `RollingRadon` compensates with `slopegrid*-1` at the very end; the public release dropped that line. | Every slope from the public repo points the wrong way. For migration work this reverses the inferred direction. |
-| `regrid.m` | Target spacing computed as `(1/f)/20`, a **time**, then applied to the distance axis. | For a 2.5 km line at 600 MHz it asks for ~3x10¹³ samples and dies in the allocator. |
-| `radon_ndh.m` | `data = (data - min(data))/max(data)` divides by the max of the *unshifted* data, which is negative for dB input. | Log-power windows came back sign-flipped; methods 3 and 4 are not invariant to that. |
-| `radon_ndh.m` | `find(x == max(x))` returns several indices on a tie and none at all for a featureless window. | Tie → size error on assignment; empty → `Index exceeds array bounds`. |
-| `radon_ndh.m` | `griddedInterpolant` requires ascending sample points. | A descending (elevation) y axis threw before reaching the branch meant to handle it. |
-| `RollingRadon.m` | Microsecond detection tested the **sample step** (`Time(2)-Time(1) > 1e-6`). | A finely sampled microsecond record passes; a coarse second-valued one fails. Now tests the record length. |
-| `RollingRadon.m` | `lp(Data)` is `20*log10`, but OPR products store **detected power**. | Doubled the dB scale, silently halving the effect of every dB threshold. |
-| `RollingRadon.m` | `breaks = [1 length(Data(1,:))]` with chunks indexed `breaks(k):breaks(k+1)-1`. | Dropped the final trace of every line short enough for one chunk. |
-| `RollingRadon.m` | `if exist('movie')` tested the wrong variable name (the argument is `movie_flag`). | `movie_flag` was unconditionally reset to 0; the animation option could never be enabled. |
-| `RollingRadon.m` | `exist('max_frequency') == 1` is true for a variable that exists but is **empty**. | Passing `[]` as a positional placeholder selected the regridding branch and divided by `[]`. |
-| `RollingRadon.m` | Window forced square in samples. | Along-track extent needs enough traces to define a dip; vertical extent needs to stay short enough to avoid system power drift. Now accepts `[horizontal vertical]`. |
-| `RollingRadon.m` | Continuity filter **substitutes** `last_val` for a deviating window and carries it forward. | Paints long constant-dip columns of fabricated values through the field. Default is now to keep the measurement (`vr = 1`). |
-| `radon_ndh.m` | Rebuilt the Radon correction images and Gaussian filters on **every call**, though they depend only on window size. | Three extra Radon transforms per window. Now cached; the Ridge A frame went from minutes to ~35 s at a 10x finer grid. |
-| `radon_ndh.m` | Angular search step hard-coded at **0.1 deg**. | Interior layers dip ~0.1 deg, so the whole signal fell inside one search increment and every window returned 0 or +/-0.1. Now an argument (`dip_step`). |
-| `RollingRadon.m` | Chunk width fixed at 1000 columns regardless of the window. | A wider window makes `roll_steps` negative, so the loop never runs, `opt_x` is never created, and the function dies in its own epilogue having silently processed nothing. Long windows are exactly what sub-degree dips need. |
-| `regrid.m` | Calls `cice_import`, which the public repo does not ship. | A clean checkout cannot regrid radar data. Included here. |
+| `radon_ndh.m` | Negate `dip_angles` so a layer deepening with increasing x returns a positive dip. | Nick's full NDH_MatlabTools `RollingRadon` applies `slopegrid*-1` at the end; the public release does not carry that line, so its sign convention is the opposite of his own pipeline's. For migration work the sign is the answer. |
+| `regrid.m` | Target spacing in mode 1 is a length, `(c_ice/f)/20`, and is converted back to seconds for a travel-time axis. | As released it is `(1/f)/20`, a time, applied to both axes. On a 2.5 km line at 600 MHz the distance axis then asks for ~3e13 samples. |
+| `radon_ndh.m` | Normalise to `[0,1]` with `(data-min)/(max-min)`. | The released form divides by the max of the unshifted data, which is negative for dB input. Methods 3 and 4 are not invariant to the resulting sign flip. |
+| `radon_ndh.m` | Take the first candidate angle, and return NaN when there is none. | `find(x == max(x))` yields several indices on a tie and none for a featureless window, and callers assign into a scalar. |
+| `RollingRadon.m` | `breaks` terminates one past the last column. | Chunks are indexed `breaks(k):breaks(k+1)-1`, so the released value drops the final trace of any line processed in one chunk. |
+| `RollingRadon.m` | Test `exist('movie_flag')` rather than `exist('movie')`. | The argument is `movie_flag`, so the animation option could not be switched on. |
 
-`RollingRadon_CReSIS.m` is **not** carried over. It opened `load(filename);
-clearvars ...; save(filename)` - writing its own arguments back into the shared
-data product - left `steps` undefined for any line under 4000 traces,
-re-processed the whole image on every chunk iteration, indexed `opt_angle` as a
-scalar and then sub-indexed the result, hard-coded Windows paths, and called
-`RadialSpreading`, which is not published in any of Nick's repositories.
+**Adaptations for current data and for sub-degree dips.** These are choices
+this application needs, not corrections:
+
+| Where | Change | Why it matters here |
+|---|---|---|
+| `radon_ndh.m` | Angular step `d_theta` is an argument (was 0.1 deg). | Interior layers dip ~0.1 deg, so the whole signal fits inside one search increment at the original step. |
+| `RollingRadon.m` | Window may be `[horizontal vertical]` rather than square in samples. | Along-track extent needs enough traces to define a dip; vertical extent wants to stay short enough that system power drift is not the strongest feature in the window. |
+| `RollingRadon.m` | Chunk width scales with the window (was a flat 1000 columns). | A window wider than the chunk makes `roll_steps` negative, so the loop does not execute. Long windows are what sub-degree dips require. |
+| `RollingRadon.m` | `lp(Data, 1)` for the filename path, and an explicit `data_is_power` flag. | OPR standard and qlook products store detected power, so `10*log10` is the right conversion; the default `20*log10` doubles the dB scale and with it every threshold expressed in dB. |
+| `RollingRadon.m` | Microsecond detection tests the record length, not the sample step. | A finely sampled microsecond record has a small step too. |
+| `RollingRadon.m` | Treat an empty optional argument as not supplied. | `exist('max_frequency') == 1` is true for a variable that exists but is `[]`, which is the natural placeholder when reaching a later positional argument. |
+| `RollingRadon.m` | Gating constants (`snr_thresh`, `vr`, `radon_method`, ...) exposed through a `params` struct; `status_flag` returned. | Tuning previously meant editing the file, and there was no way to see why a window was rejected. |
+| `RollingRadon.m` | Optional gate on the Radon peak prominence that `radon_ndh` already returns. | Without it a window containing no reflector still reports whichever angle won, rather than abstaining. |
+| `RollingRadon.m` | `vr = 1` by default, so a window that deviates from the one above it keeps its own measurement. | The continuity filter otherwise substitutes the previous value and carries it forward, which draws constant-dip columns through the field. |
+| `radon_ndh.m` | Handle a descending y axis by solving in the ascending frame. | `griddedInterpolant` requires ascending sample points, so an elevation axis errors before reaching the branch written for it. |
+| `radon_ndh.m` | Cache the Radon correction images and window filters against window size. | They do not depend on the data, but were rebuilt on every call: three extra Radon transforms per window. Caching is what made a 10x finer grid affordable. |
+| `regrid.m` | `cice_import.m` included. | It lives in NDH_MatlabTools, so a clean checkout of the slope repo alone cannot regrid radar data. |
+
+`RollingRadon_CReSIS.m` (from NDH_MatlabTools) is superseded rather than
+carried over. It is an internal 2016 driver, not part of the published
+release: it writes back to its own input file, its chunk loop re-processes
+the whole image each iteration, it assumes Windows paths, and it calls
+`RadialSpreading`, which is not in either public repository.
 `opr/RollingRadon_OPR.m` replaces it.
 
-> **Heads up:** `Data_20260109_02_003.mat` in
-> `2025_Antarctica_Ground2/CSARP_standard_HH` already carries `filename`,
-> `movie`, `plotter` and `window` from a previous run of that code. The
-> echogram itself is intact, but the file is no longer a pristine OPR
-> product. `opr_load_echogram` warns when it sees this.
+> **Note on one data file:** `Data_20260109_02_003.mat` in
+> `2025_Antarctica_Ground2/CSARP_standard_HH` carries `filename`, `movie`,
+> `plotter` and `window` variables, which is the signature of that old
+> driver's `save(filename)`. The echogram itself is intact, but the file is
+> no longer a pristine OPR product. `opr_load_echogram` warns when it sees
+> this so nobody is surprised by it later.
 
 ### What the OPR front end does
 

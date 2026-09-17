@@ -4,13 +4,12 @@ function R = RollingRadon_OPR(data_file, varargin)
 %   R = ROLLINGRADON_OPR(data_file)
 %   R = ROLLINGRADON_OPR(data_file, 'name', value, ...)
 %
-% Replacement for RollingRadon_CReSIS.m, which could not run: it opened
-% with load/save on its own input (writing the function's arguments back
-% into the shared data product), left `steps` undefined for any line
-% shorter than 4000 traces, indexed opt_angle as a scalar and then
-% sub-indexed the result, re-processed the whole image on every chunk
-% iteration, hard-coded Windows output paths, and called RadialSpreading,
-% which is not published in any of Nick's repositories.
+% OPR front end for Nick Holschuh's rolling Radon solver. It supersedes
+% RollingRadon_CReSIS.m from NDH_MatlabTools, an internal 2016 driver that
+% predates the current product format: it writes back to its own input
+% file, its chunk loop re-processes the whole image each iteration, it
+% assumes Windows paths, and it calls RadialSpreading, which is not in
+% either public repository.
 %
 % Options (name/value)
 %   grid_spacing   isotropic working grid (m), default 2
@@ -113,8 +112,7 @@ end
 % Surface/bed gate, in the same depth-below-surface metres as the y axis.
 % Where the bed is unpicked, gate on the bottom of the gridded column
 % instead of NaN - a NaN bound makes the ice-column test false everywhere,
-% which is exactly how the original code produced an all-NaN slope field
-% without ever reporting a problem.
+% which yields an all-NaN slope field with no indication of why.
 bed_gate = G.bed_z;
 nanbed = ~isfinite(bed_gate);
 if any(nanbed)
@@ -196,6 +194,11 @@ R = struct();
 R.slope_x = slope_x;
 R.slope_z = opt_y;
 R.slopes = slopes;
+% Continuity of the field along track: how much a dip changes between
+% horizontally adjacent cells. A coherent stratigraphy gives a small
+% number; a field of independent guesses gives a large one.
+dh = diff(slopes, 1, 2);
+R.continuity = median(abs(dh(isfinite(dh))));
 R.status = status;        % 0 solved, 1 outside ice, 2 low SNR, 3 slope rejected
 R.bed_z = interp1(G.x, G.bed_z, slope_x, 'linear', NaN);
 R.lat = interp1(D.dist, D.lat, slope_x, 'linear', NaN);
@@ -223,6 +226,10 @@ if p.verbose
         v = R.slopes(isfinite(R.slopes));
         fprintf('    dip: median %.2f deg, IQR %.2f to %.2f, range %.2f to %.2f\n', ...
             median(v), prctile(v,25), prctile(v,75), min(v), max(v));
+    end
+    if isfinite(R.continuity)
+        fprintf('    along-track continuity: median |d(dip)| between adjacent cells = %.3f deg\n', ...
+            R.continuity);
     end
     rej = R.status(~isfinite(R.slopes));
     n = numel(R.slopes);
@@ -287,16 +294,14 @@ end
 % Solver defaults that differ from RollingRadon's built-ins, for reasons
 % that matter on real data:
 %
-%   vr = 1      RollingRadon's continuity filter REPLACES a window that
-%               deviates from the one above it with the previous value,
-%               and then carries that value forward. On a real line this
-%               paints long constant-dip columns through the slope field -
-%               fabricated numbers that look like signal. vr = 1 makes the
-%               filter accept each measurement instead of substituting.
-%               Raise it to re-enable Holschuh's original smoothing.
+%   vr = 1      RollingRadon's continuity filter replaces a window that
+%               deviates from the one above it with the previous value and
+%               carries that value forward, which draws constant-dip
+%               columns through the field. vr = 1 keeps each measurement
+%               instead. Raise it to re-enable the original smoothing.
 %   snr_thresh  2 dB passes almost anything once the image is depth
 %               detrended; 4 dB actually discriminates.
-defaults = struct('vr', 1, 'snr_thresh', 4);
+defaults = struct('vr', 1, 'snr_thresh', 4, 'radon_snr_thresh', 0);
 fn = fieldnames(defaults);
 for i = 1:numel(fn)
     if ~isfield(p.solver_params, fn{i})

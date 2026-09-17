@@ -98,8 +98,8 @@ if length(nx) == 1
             dy_target = dl_target;
         end
 
-        % Size the candidate grids arithmetically. Building them first is
-        % what made a bad request unrecoverable rather than merely wrong.
+        % Size the candidate grids arithmetically, so an unreasonable
+        % request is rejected by the guard below rather than attempted.
         n_x2 = floor((xaxis(end)-xaxis(1))/dl_target)+1;
         n_y2 = floor((yaxis(end)-yaxis(1))/dy_target)+1;
 

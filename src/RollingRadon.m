@@ -39,6 +39,8 @@ pr = 0.1;
 vr = 3;
 % Which radon_ndh optimisation criterion to use (see radon_ndh.m)
 radon_method = 0;
+% Minimum Radon peak prominence to accept a window (0 = accept everything)
+radon_snr_thresh = 0;
 % Angular step of the Radon dip search (degrees)
 d_theta = 0.1;
 % How far a slope may jump between vertically adjacent cells (degrees)
@@ -49,7 +51,8 @@ variability_thresh = 4;
 %%% struct without touching the source.
 if exist('params','var') == 1 && isstruct(params)
     tunable = {'o_f_vertical','o_f_horizontal','snr_thresh','snr_fac', ...
-        'pr','vr','radon_method','variability_thresh','d_theta'};
+        'pr','vr','radon_method','variability_thresh','d_theta', ...
+        'radon_snr_thresh'};
     given = fieldnames(params);
     unknown = setdiff(given, tunable);
     if ~isempty(unknown)
@@ -66,6 +69,7 @@ if exist('params','var') == 1 && isstruct(params)
     if isfield(params,'radon_method'),       radon_method = params.radon_method; end
     if isfield(params,'variability_thresh'), variability_thresh = params.variability_thresh; end
     if isfield(params,'d_theta'),            d_theta = params.d_theta; end
+    if isfield(params,'radon_snr_thresh'),   radon_snr_thresh = params.radon_snr_thresh; end
 end
 
 
@@ -159,9 +163,8 @@ if isstr(data_x_or_filename) == 1 % The case where it is a filename
 
     %%% FIX: CReSIS/OPR standard and qlook products store DETECTED POWER,
     %%% so the log conversion is 10*log10, not the 20*log10 that lp()
-    %%% applies by default. Using the default doubled the dB scale, which
-    %%% silently doubled every threshold expressed in dB (snr_thresh) and
-    %%% halved its effect.
+    %%% applies by default. The default doubles the dB scale, and with it
+    %%% the effective value of every threshold expressed in dB.
     if exist('data_is_power') == 0
         data_is_power = 1;
     end
@@ -202,7 +205,8 @@ end
 clearvars -except Data dist data_y Surface Bottom window_size ...
     window_size2 o_f_vertical o_f_horizontal snr_thresh plotter ...
     movie_flag snr_fac max_frequency xstep_roll ystep_roll ...
-    angle_thresh pr vr data_is_power radon_method variability_thresh d_theta
+    angle_thresh pr vr data_is_power radon_method variability_thresh d_theta ...
+    radon_snr_thresh
 
 %%% FIX: use the same wave speed as cice_import rather than a second,
 %%% slightly different hard-coded constant.
@@ -250,11 +254,9 @@ end
 % than the prescribed value, to save on memory.
 %
 %%% FIX: the chunk width was a flat 1000 columns regardless of the window.
-%%% A window wider than that makes roll_steps negative below, so `for i =
-%%% 1:roll_steps` never executes, opt_x is never created, and the function
-%%% dies in its own epilogue with "Unrecognized variable 'opt_x'" - having
-%%% silently processed nothing. Long windows are exactly what sub-degree
-%%% dips need, so the chunk has to be sized against the window.
+%%% A window wider than that makes roll_steps negative below, so the loop
+%%% does not execute and opt_x is never created. Long windows are what
+%%% sub-degree dips need, so the chunk is sized against the window.
 overload_factor = max(1000, 2*window_size);
 
 if length(Data(1,:)) > overload_factor
@@ -454,6 +456,20 @@ for k = 1:steps
                         radon_data,angle_thresh(1),0,radon_method,d_theta);
                     if isnan(opt_angle(j,i+previous_xsteps)) == 1
                         status_flag(j,i+previous_xsteps) = 2;
+                    end
+
+                    %%% ADD: radon_ndh already returns the prominence of
+                    %%% the Radon peak - how much better the winning angle
+                    %%% scored than the worst one - and the released code
+                    %%% computed it and then discarded it. Without this
+                    %%% gate a window with no reflector in it still returns
+                    %%% whichever angle happened to win, so the slope field
+                    %%% fills with confident-looking noise instead of
+                    %%% abstaining where the data cannot answer.
+                    if radon_snr_thresh > 0 && rsnr < radon_snr_thresh
+                        opt_angle(j,i+previous_xsteps) = NaN;
+                        status_flag(j,i+previous_xsteps) = 2;
+                        skipflag = 1;
                     end
                     
                     %%% This identifies if the value exceeds the second
