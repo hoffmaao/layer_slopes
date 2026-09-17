@@ -23,8 +23,13 @@ function R = RollingRadon_OPR(data_file, varargin)
 %   dip_max        search +/- this, true degrees, default 1
 %   dip_accept     discard results beyond this, default dip_max
 %   dip_step       search step, true degrees, default 0.005
-%   q_thresh       minimum Radon peak/median criterion ratio, default 1.5.
-%                  Incoherent noise scores about 1.
+%   q_thresh       minimum Radon criterion peak/median ratio, default 2.5.
+%                  Calibrated against a control: white noise put through the
+%                  same conditioning has median q 1.6, and 53-62%% of it
+%                  passes a threshold of 1.5. Real layering on this data
+%                  sits at 2.2-2.6. Note that speckle does not BIAS the
+%                  result - it has no preferred orientation - so a low
+%                  threshold adds scatter rather than a systematic error.
 %   z_pad_surface  ignore this far below the surface (m), default 30
 %   z_pad_bed      stop this far above the bed (m), default 25
 %   z_max          hard depth cap (m), [] = from the bed pick
@@ -175,7 +180,7 @@ p.overlap_z = 0.25;
 p.dip_max = 1;
 p.dip_accept = [];
 p.dip_step = 0.005;
-p.q_thresh = 1.5;
+p.q_thresh = 2.5;
 p.z_pad_surface = 30;
 p.z_pad_bed = 25;
 p.z_max = [];
