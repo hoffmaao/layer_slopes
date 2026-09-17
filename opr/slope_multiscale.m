@@ -10,14 +10,15 @@ function M = slope_multiscale(data_file, varargin)
 % accumulation-radar data, and they pull in opposite directions:
 %
 %   window_z  sets depth detail, and is cheap. The radar resolves 0.53 m
-%             and layers sit ~8 m apart, so a 10-15 m window still holds
+%             and layers sit ~8 m apart, so a 15-20 m window still holds
 %             several layer cycles. Small features in depth are resolvable.
-%   window_x  sets the smallest measurable dip, and is expensive. A dip of
-%             theta displaces a layer by window_x*tan(theta), which has to
-%             exceed a useful fraction of one range cell. At 500 m the
-%             floor is 0.061 deg - the size of the signal itself, and the
-%             field falls apart (sign consistency 0.61). At 2000 m the
-%             floor is 0.015 deg and it holds together (0.82).
+%   window_x  trades accuracy against sensitivity. A long window averages
+%             over a range of true dips and regresses toward their mean:
+%             measured against a tracked horizon the regression gain runs
+%             0.99 at 750 m, 0.96 at 1000 m, 0.86 at 2000 m, 0.71 at
+%             3000 m. But the smallest measurable dip goes the other way,
+%             0.040 / 0.030 / 0.015 / 0.010 deg, because a dip has to
+%             displace a layer by a useful part of one range cell.
 %
 % A single window therefore either resolves small features and cannot see
 % small dips, or sees small dips and smooths the features away. Running
@@ -27,7 +28,7 @@ function M = slope_multiscale(data_file, varargin)
 %
 % Options
 %   scales      n x 2 array of [window_x window_z] in metres, coarse first.
-%               Default [4000 30; 2000 20; 1000 10].
+%               Default [2000 30; 1000 20; 600 15].
 %   tol         agreement tolerance (deg) between neighbouring scales.
 %               Default 0.05.
 %   tol_frac    alternative tolerance as a fraction of the coarse |dip|;
@@ -49,7 +50,7 @@ here = fileparts(mfilename('fullpath'));
 addpath(fullfile(here,'..','src'));
 
 % --- split our options from the solver's --------------------------------
-o.scales = [4000 30; 2000 20; 1000 10];
+o.scales = [2000 30; 1000 20; 600 15];
 o.tol = 0.05;
 o.tol_frac = 0.5;
 o.out_file = '';

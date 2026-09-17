@@ -64,21 +64,18 @@ if isempty(o.seg_len)
     end
 end
 
-% Rebuild the exact grid the solver saw.
+% Rebuild the exact grid the solver saw. Copy across only the fields that
+% are actually present, so a result saved by an older or newer version
+% still plots instead of erroring on one renamed option.
 D = opr_load_echogram(R.param.data_file, struct('verbose', false));
-G = opr_flatten_grid(D, struct( ...
-    'grid_spacing', R.param.grid_spacing, ...
-    'z_pad_bed',    R.param.z_pad_bed, ...
-    'z_max',        R.param.z_max, ...
-    'bed_default',  R.param.bed_default, ...
-    'detrend_len',  R.param.detrend_len, ...
-    'smooth_len',   R.param.smooth_len, ...
-    'agc_len',      R.param.agc_len, ...
-    'trace_balance',R.param.trace_balance, ...
-    'vert_exag',    R.param.vert_exag, ...
-    'smooth_x',     R.param.smooth_x, ...
-    'exclude_z',    R.param.exclude_z, ...
-    'verbose',      false));
+gopt = struct('verbose', false);
+for f = {'grid_spacing','z_pad_bed','z_max','bed_default','detrend_len', ...
+         'smooth_len','trace_balance','vert_exag','smooth_x','exclude_z'}
+    if isfield(R.param, f{1})
+        gopt.(f{1}) = R.param.(f{1});
+    end
+end
+G = opr_flatten_grid(D, gopt);
 
 % Lines run to tens of km; metres force an exponent onto the axis.
 xkm = G.x/1000;
@@ -172,7 +169,7 @@ else
     h = imagesc(ax3, sxkm, R.slope_z, R.slopes);
     set(h, 'AlphaData', isfinite(R.slopes)*o.alpha);
 end
-colormap(ax3, b2r2(o.clim_dip(1), o.clim_dip(2)));
+colormap(ax3, ls_slope_colormap());
 clim(ax3, o.clim_dip);
 set(ax3,'YDir','reverse','Color','none','XTick',[],'YTick',[],'Box','off');
 hold(ax3,'on');
@@ -211,7 +208,7 @@ ax3.Position = ax2.Position;
 
 xlabel(ax2,'distance (km)');
 ylabel(ax2,'depth (m)');
-cb2 = colorbar(ax3); cb2.Label.String = 'layer dip (deg)';
+cb2 = colorbar(ax3); cb2.Label.String = 'layer slope (deg)';
 drawnow;
 cb2.Position([1 3]) = cb1.Position([1 3]);
 cb2.Position([2 4]) = [ax2.Position(2) ax2.Position(4)];

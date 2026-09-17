@@ -1,6 +1,6 @@
 # Attribution and provenance
 
-## Origin of the method
+## The method
 
 The rolling Radon transform approach to englacial layer slopes is Nick
 Holschuh's:
@@ -10,54 +10,61 @@ Holschuh's:
 > Geophysical Research Letters 44, 5561-5570.
 > <https://doi.org/10.1002/2017GL073417>
 
-Please cite that paper for the method.
+**Please cite that paper.** The idea implemented here is his: project a
+window of the radargram along a family of directions, and take the
+direction whose projection is most coherent as the layer orientation.
 
-## Origin of the code
+Reference implementations, worth reading:
 
-Everything in `src/` other than `cice_import.m` was taken from
+- <https://github.com/nholschuh/SlopeExtraction_Radar>
+- <https://github.com/nholschuh/NDH_MatlabTools>
 
-> <https://github.com/nholschuh/SlopeExtraction_Radar>
-> at commit `df8a2d1b548570c1279de3a68c7a552a4de00310`
-> ("Added depth_shift and elevation_shift to the repo")
+## The code
 
-`cice_import.m` is a two-line reimplementation of a script `regrid.m` calls
-but the public repository does not ship (it lives in
-<https://github.com/nholschuh/NDH_MatlabTools>). It is written here rather
-than copied.
+**This repository contains no code from either of those repositories.**
+Everything in `src/` and `opr/` was written here. There is no dependency on
+`SlopeExtraction_Radar` or `NDH_MatlabTools`, and neither needs to be on the
+MATLAB path.
 
-The upstream README is preserved verbatim at `docs/UPSTREAM_README`.
+That was a deliberate decision, for three reasons:
 
-### Licensing
+1. `SlopeExtraction_Radar` carries no licence file, so no terms of
+   redistribution attach to it. Writing our own avoids the question.
+2. Its published release and `NDH_MatlabTools` disagree with each other on
+   the SIGN of the result: the public release returns rising-positive, while
+   the full toolbox applies `slopegrid*-1` at the end. Inheriting from
+   either invites the sign to drift. Ours is stated, tested and fixed
+   (see below).
+3. Several implementation choices needed to change for this application -
+   a variance criterion rather than a peak amplitude, a rectangular window,
+   an explicit angular step - and it is cleaner to own the estimator than to
+   carry a patched copy of someone else's.
 
-`nholschuh/SlopeExtraction_Radar` carries no licence file, so no explicit
-terms of redistribution are attached to it. The code is republished here with
-attribution, in the spirit of the upstream README's stated intent to make it
-"public and useful for folks who may want to do similar analysis", and with
-every modification marked. If you plan to build on this, contact Nick
-(Nick.Holschuh@gmail.com) - both to let him know and because several of the
-fixes below are worth folding back upstream.
+`test_holschuh_regime.m` checks that the reimplementation still reproduces
+the method in the regime the paper targeted: RDS/impulse radar, 2.8 m range
+resolution, layers 45 m apart, folds giving +/-15 degree slopes. It recovers
+the slope with an RMS error of 0.04 degrees and r = 1.000 against truth.
 
-## Files and their status
+## Sign convention
 
-| File | Status |
+    POSITIVE slope = the layer RISES (gets shallower) with increasing x.
+
+This is `d(elevation)/dx`, the standard glaciological sense, and it matches
+the public `SlopeExtraction_Radar` release. `NDH_MatlabTools` produces the
+opposite. `tests/test_sign.m` pins ours down against synthetics so it cannot
+drift; check which one your downstream analysis expects before comparing
+numbers between codebases.
+
+## Files
+
+| Path | Origin |
 |---|---|
-| `src/RollingRadon.m` | Holschuh, modified - see `%%% FIX:` / `%%% ADD:` comments |
-| `src/radon_ndh.m` | Holschuh, modified - sign convention, normalisation, tie/empty handling, descending axis, filter caching |
-| `src/regrid.m` | Holschuh, modified - mode-1 target spacing is a length, not a time |
-| `src/cice_import.m` | Written here (upstream ships it in a different repo) |
-| `src/b2r2.m`, `combvec.m`, `depth_shift.m`, `distance_vector.m`, `elevation_shift.m`, `exclude.m`, `find_nearest.m`, `interpNaN.m`, `lp.m`, `matrix_to_vector.m`, `plot_indicator_lines.m`, `pointdistance.m`, `polarstereo_fwd.m`, `rad2deg.m`, `value2value.m` | Holschuh, unmodified |
-| `opr/*` | Written here |
-| `examples/*`, `tests/*` | Written here |
+| `src/ls_radon_dip.m` | Written here. Radon slope estimator. |
+| `src/ls_rolling_radon.m` | Written here. Rolling-window driver. |
+| `src/ls_polarstereo_fwd.m` | Written here, from Snyder (1987). |
+| `src/ls_cice.m`, `src/ls_slope_colormap.m` | Written here. |
+| `opr/*` | Written here. OPR/CReSIS front end, figures, diagnostics. |
+| `examples/*`, `tests/*` | Written here. |
 
-Every edit to an upstream file is marked in place with a `%%% FIX:` or
-`%%% ADD:` comment explaining what was wrong and why the change is correct, so
-the diff against upstream is readable without a diff tool.
-
-## Not carried over
-
-`RollingRadon_CReSIS.m` (from NDH_MatlabTools) is deliberately absent. It is
-superseded by `opr/RollingRadon_OPR.m`. The reasons it was not repaired in
-place are listed in the README and in the header of its replacement; the
-short version is that it writes to its own input file, its chunking loop does
-not actually chunk, and it depends on `RadialSpreading`, which is not
-published in any of Nick's public repositories.
+The only external dependencies are MATLAB's own `radon` (Image Processing
+Toolbox) and `prctile` (Statistics Toolbox).

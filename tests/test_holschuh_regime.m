@@ -7,18 +7,16 @@ function n_fail = test_holschuh_regime()
 % (their fig. 3). That is a completely different problem from a 600-900 MHz
 % accumulation radar looking at 0.1 deg dips in the top 200 m.
 %
-% This runs a synthetic in Nick's regime through the solver using HIS
-% published defaults - no vertical exaggeration, no along-track smoothing,
-% no per-trace balancing, o_f 2/6, snr_thresh 2, vr 3, radon method 0 - to
-% confirm that none of the fixes here have broken the method as published.
-% If this passes, the implementation is faithful and any difficulty on
-% accumulation-radar data is about the problem, not the code.
+% This runs a synthetic in that regime with every accumulation-radar
+% adaptation switched OFF - no vertical exaggeration, no along-track
+% smoothing, no per-trace balancing, no depth filtering - to confirm the
+% method itself still works. If this passes, any difficulty on
+% accumulation-radar data is about the problem, not the implementation.
 
 here = fileparts(mfilename('fullpath'));
 addpath(fullfile(here,'..','src')); addpath(fullfile(here,'..','opr'));
 n_fail = 0;
-cice_import
-c = cice;
+c = ls_cice();
 
 tmp = tempname; mkdir(tmp);
 cleaner = onCleanup(@() rmdir(tmp,'s'));
@@ -34,7 +32,7 @@ depth = twtt*c/2;
 ntrace = 1400;
 lat = -79.0 - (0:ntrace-1)*1.35e-4;      % ~15 m trace spacing
 lon = -110*ones(1,ntrace);
-[px,py] = polarstereo_fwd(lat,lon,0);
+[px,py] = ls_polarstereo_fwd(lat,lon,0);
 dist = [0 cumsum(hypot(diff(px),diff(py)))];
 
 lambda = 45;                    % layer spacing, metres - RDS scale
@@ -44,7 +42,7 @@ bed = 1700;
 [Dist, Depth] = meshgrid(dist, depth);
 fold = 250*sin(2*pi*Dist/6000);              % gentle large-amplitude folds
 true_dip_fn = atand(250*2*pi/6000*cos(2*pi*dist/6000));
-db = 14*sin(2*pi*(Depth - fold)/lambda) - 55 - 0.022*Depth;
+db = 14*sin(2*pi*(Depth + fold)/lambda) - 55 - 0.022*Depth;
 db(Depth < 150) = -40;                        % surface package
 db(Depth > bed) = -125;                       % below the bed
 Data = single(10.^(db/10));
@@ -64,20 +62,20 @@ fprintf('  true dip sweeps %.1f to %.1f deg\n', min(true_dip_fn), max(true_dip_f
 % --- Nick's published settings -----------------------------------------
 R = RollingRadon_OPR(f, ...
     'grid_spacing', 5, ...        % isotropic, ~2 samples per range cell
-    'vert_exag',    1, ...        % OFF - degree-scale dips need no help
+    'vert_exag',    1, ...        % OFF - degree-scale slopes need no help
     'window_x',     400, ...
     'window_z',     400, ...      % square window, as published
+    'overlap_x',    0.5, ...
+    'overlap_z',    0.25, ...
     'dip_max',      20, ...
     'dip_accept',   15, ...
+    'dip_step',     0.1, ...
     'z_pad_surface',200, ...
     'z_pad_bed',    50, ...
     'smooth_x',     0, ...        % OFF - would smear a 5 deg layer
     'smooth_len',   0, ...        % OFF
     'detrend_len',  0, ...        % OFF
     'trace_balance',false, ...    % OFF
-    'solver_params', struct('o_f_horizontal',2,'o_f_vertical',6, ...
-                            'snr_thresh',2,'snr_fac',1,'vr',3, ...
-                            'radon_method',0), ...
     'verbose', false);
 
 v = R.slopes(isfinite(R.slopes));

@@ -33,6 +33,9 @@ function D = opr_load_echogram(data_file, opt)
 %
 % See also ROLLINGRADON_OPR, OPR_LAYER_PATH
 
+here = fileparts(mfilename('fullpath'));
+addpath(fullfile(here,'..','src'));
+
 if nargin < 2, opt = struct(); end
 if ~isfield(opt,'layer_file'),       opt.layer_file = '';  end
 if ~isfield(opt,'surface_layer_id'), opt.surface_layer_id = 1; end
@@ -106,7 +109,7 @@ if isfield(S,'GPS_time'),  D.gps_time = double(S.GPS_time(:)'); else, D.gps_time
 
 % --- geometry -----------------------------------------------------------
 hemi = double(median(D.lat) >= 0);   % 0 south (EPSG:3031), 1 north (3413)
-[D.x, D.y] = polarstereo_fwd(D.lat, D.lon, hemi);
+[D.x, D.y] = ls_polarstereo_fwd(D.lat, D.lon, hemi);
 D.x = D.x(:)'; D.y = D.y(:)';
 D.dist = [0 cumsum(hypot(diff(D.x), diff(D.y)))];
 

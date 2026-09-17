@@ -19,7 +19,7 @@ function G = opr_flatten_grid(D, opt)
 %   .vert_exag     along-track spacing = grid_spacing*vert_exag, presented
 %                  to the solver as isotropic. Default 1.
 %   .agc_len       running-RMS normalisation length (m), 0 = off, default 0
-%   .c_ice         wave speed (m/s), default from cice_import
+%   .c_ice         wave speed (m/s), default LS_CICE()
 %   .verbose
 %
 % Returns
@@ -31,7 +31,7 @@ function G = opr_flatten_grid(D, opt)
 %
 % Why this step exists at all:
 %
-%   * RADON NEEDS SQUARE PIXELS. radon_ndh interpolates to a 1:1 aspect
+%   * RADON NEEDS SQUARE PIXELS. LS_RADON_DIP resamples to a 1:1 aspect
 %     internally, and on a native OPR grid (dz 0.14 m, dx 5.9 m) that means
 %     upsampling every window 42x along track. Gridding once, isotropically
 %     and up front, makes the aspect correction a no-op and is the
@@ -45,6 +45,9 @@ function G = opr_flatten_grid(D, opt)
 %     feature in the window and biases every dip estimate toward zero.
 %
 % See also ROLLINGRADON_OPR, OPR_LOAD_ECHOGRAM
+
+here = fileparts(mfilename('fullpath'));
+addpath(fullfile(here,'..','src'));
 
 if nargin < 2, opt = struct(); end
 if ~isfield(opt,'grid_spacing'), opt.grid_spacing = 2;   end
@@ -60,8 +63,7 @@ if ~isfield(opt,'smooth_x'),     opt.smooth_x = 0;       end
 if ~isfield(opt,'exclude_z'),    opt.exclude_z = [];     end
 if ~isfield(opt,'verbose'),      opt.verbose = true;     end
 if ~isfield(opt,'c_ice') || isempty(opt.c_ice)
-    cice_import
-    opt.c_ice = cice;
+    opt.c_ice = ls_cice();
 end
 
 c = opt.c_ice;
@@ -256,7 +258,7 @@ G.img = work;
 % returns merge at a fixed range, and the resulting band is a strong
 % horizontal feature that has nothing to do with the stratigraphy. Blanking
 % it to NaN means any window overlapping it abstains rather than fitting
-% the artefact: radon_ndh returns NaN for a window it cannot score, and
+% the artefact: LS_RADON_DIP returns NaN for a window it cannot score,
 % RollingRadon already records that as "SNR too low" (status 2). Windows
 % wholly above or below the band are unaffected, so the layering on both
 % sides is still solved.

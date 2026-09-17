@@ -12,8 +12,7 @@ addpath(fullfile(here,'..','src'));
 addpath(fullfile(here,'..','opr'));
 
 n_fail = 0;
-cice_import
-c = cice;
+c = ls_cice();
 
 tmp = tempname; mkdir(tmp);
 cleaner = onCleanup(@() rmdir(tmp,'s'));
@@ -22,7 +21,7 @@ cleaner = onCleanup(@() rmdir(tmp,'s'));
 ntrace = 500;
 lat = -77.78 - (0:ntrace-1)*2.0e-5;        % a short straight line
 lon = 158.75*ones(1,ntrace);
-[px, py] = polarstereo_fwd(lat, lon, 0);
+[px, py] = ls_polarstereo_fwd(lat, lon, 0);
 dist = [0 cumsum(hypot(diff(px), diff(py)))];
 
 dt = 1.6667e-9;
@@ -30,12 +29,12 @@ nt = 9000;                                  % ~760 m of ice
 twtt = (0:nt-1)'*dt;
 depth = twtt*c/2;
 
-true_dip = 4;                               % deg, deepening with +x
+true_dip = 4;                               % deg, + = RISES with +x
 lambda = 45;                                % m
 bed_depth = 700;
 
 [Dist, Depth] = meshgrid(dist, depth);
-db = 12*sin(2*pi*(Depth - tand(true_dip)*Dist)/lambda) - 60;
+db = 12*sin(2*pi*(Depth + tand(true_dip)*Dist)/lambda) - 60;
 db = db - 0.02*Depth;                        % a realistic depth trend
 db(Depth > bed_depth) = -130;                % noise below the bed
 Data = single(10.^(db/10));                  % OPR stores detected POWER
@@ -64,8 +63,8 @@ else
 end
 
 % ---- 2. power -> dB is 10*log10 ---------------------------------------
-G = opr_flatten_grid(D, struct('grid_spacing',2,'z_max',bed_depth-25, ...
-    'detrend_len',0,'verbose',false));
+G = opr_flatten_grid(D, struct('grid_spacing',2,'vert_exag',1, ...
+    'z_max',bed_depth-25,'detrend_len',0,'smooth_len',0,'verbose',false));
 mid = round(size(G.raw_db,2)/2);
 expect = interp1(depth, db(:,round(ntrace/2)), G.z(:), 'linear');
 got = G.raw_db(:,mid);
@@ -87,9 +86,10 @@ else
 end
 
 % ---- 4. end-to-end dip recovery ---------------------------------------
-R = RollingRadon_OPR(data_file, 'grid_spacing',2, 'window',200, ...
-    'dip_max',20, 'z_max',bed_depth-25, 'z_pad_surface',40, ...
-    'detrend_len',40, 'verbose',false);
+R = RollingRadon_OPR(data_file, 'grid_spacing',2, 'vert_exag',1, ...
+    'window_x',200, 'window_z',200, 'dip_max',20, 'dip_step',0.1, ...
+    'z_max',bed_depth-25, 'z_pad_surface',40, 'detrend_len',40, ...
+    'smooth_x',0, 'verbose',false);
 
 v = R.slopes(isfinite(R.slopes));
 if isempty(v)
@@ -107,15 +107,16 @@ else
 end
 
 % ---- 5. the opposite dip comes back with the opposite sign ------------
-db2 = 12*sin(2*pi*(Depth + tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
+db2 = 12*sin(2*pi*(Depth - tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
 db2(Depth > bed_depth) = -130;
 Data = single(10.^(db2/10));
 data_file2 = fullfile(tmp,'Data_synth_01_002.mat');
 save(data_file2,'Data','Time','Latitude','Longitude','Surface','Bottom', ...
     'Elevation','GPS_time','-v7');
-R2 = RollingRadon_OPR(data_file2, 'grid_spacing',2, 'window',200, ...
-    'dip_max',20, 'z_max',bed_depth-25, 'z_pad_surface',40, ...
-    'detrend_len',40, 'verbose',false);
+R2 = RollingRadon_OPR(data_file2, 'grid_spacing',2, 'vert_exag',1, ...
+    'window_x',200, 'window_z',200, 'dip_max',20, 'dip_step',0.1, ...
+    'z_max',bed_depth-25, 'z_pad_surface',40, 'detrend_len',40, ...
+    'smooth_x',0, 'verbose',false);
 v2 = R2.slopes(isfinite(R2.slopes));
 if isempty(v2) || abs(median(v2) + true_dip) > 1.0
     fprintf('  FAIL mirrored dip: got %.2f, expected %+g\n', ...

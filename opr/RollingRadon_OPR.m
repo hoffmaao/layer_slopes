@@ -4,61 +4,57 @@ function R = RollingRadon_OPR(data_file, varargin)
 %   R = ROLLINGRADON_OPR(data_file)
 %   R = ROLLINGRADON_OPR(data_file, 'name', value, ...)
 %
-% OPR front end for Nick Holschuh's rolling Radon solver. It supersedes
-% RollingRadon_CReSIS.m from NDH_MatlabTools, an internal 2016 driver that
-% predates the current product format: it writes back to its own input
-% file, its chunk loop re-processes the whole image each iteration, it
-% assumes Windows paths, and it calls RadialSpreading, which is not in
-% either public repository.
+% Reads an echogram, conditions it, rolls a window over it, and fits the
+% dominant layer slope in each window with a Radon transform, after
+% Holschuh et al. (2017). The input file is opened read-only.
+%
+% SIGN CONVENTION: positive slope = the layer RISES (gets shallower) with
+% increasing along-track distance, i.e. d(elevation)/dx.
 %
 % Options (name/value)
-%   grid_spacing   isotropic working grid (m), default 2
-%   window_x       along-track window length (m), default 120
-%   window_z       vertical window height (m), default 30
-%   window         legacy square window (m); sets both when given
-%   range_resolution  vertical resolution of the system (m), default 0.53
+%   grid_spacing   vertical grid spacing (m), default 0.25
 %   vert_exag      along-track sampling = grid_spacing*vert_exag, presented
-%                  to the Radon as isotropic. Multiplies the apparent dip by
-%                  vert_exag, which is what makes a ~0.1 deg interior layer
-%                  measurable at all. Inverted exactly on output. Default 1.
-%   dip_step       angular step of the dip search, in TRUE degrees
-%   dip_max        maximum dip searched (deg), default 20
-%   dip_accept     dips beyond this are discarded (deg), default dip_max-5
+%                  to the Radon as isotropic. Multiplies the apparent slope
+%                  by exactly vert_exag, undone on output. Default 20.
+%   window_x       along-track window length (m), default 1000
+%   window_z       vertical window height (m), default 20
+%   overlap_x      step between centres as a fraction of the window,
+%   overlap_z      default 0.25 (a quarter window)
+%   dip_max        search +/- this, true degrees, default 1
+%   dip_accept     discard results beyond this, default dip_max
+%   dip_step       search step, true degrees, default 0.005
+%   q_thresh       minimum Radon peak/median criterion ratio, default 1.5.
+%                  Incoherent noise scores about 1.
 %   z_pad_surface  ignore this far below the surface (m), default 30
 %   z_pad_bed      stop this far above the bed (m), default 25
 %   z_max          hard depth cap (m), [] = from the bed pick
-%   bed_default    assumed ice thickness (m) when there is no bed pick,
-%                  default 1500
-%   exclude_z      N x 2 array of depth bands (m) to blank; windows that
-%                  overlap one abstain. Use for the merged pulse return.
-%   smooth_x       along-track low-pass length (m), default 60. Removes
-%                  the vertical striping from trace-to-trace gain changes.
-%                  Nearly free: a 0.1 deg layer moves 0.1 m over 60 m.
-%   smooth_len     depth low-pass length (m), 0 = off, default 1.5.
-%                  Suppresses structure finer than the layering itself.
-%   detrend_len    depth high-pass length (m), 0 = off (the default).
-%                  Removes the long-wavelength power envelope if wanted.
+%   bed_default    assumed ice thickness (m) when no bed pick, default 1500
+%   exclude_z      n x 2 depth bands (m) to blank, e.g. a merged pulse return
+%   smooth_x       along-track low-pass (m), default 60
+%   smooth_len     depth low-pass (m), default 1.5
+%   detrend_len    depth high-pass (m), default 30. Removes the
+%                  power-vs-depth gradient, which is horizontal and
+%                  otherwise dominates the window.
 %   trace_balance  equalise traces against each other, default true
-%   agc_len        running-RMS normalisation (m), 0 = off, default 0
+%   full_window_in_ice  require the whole window inside the gates, default true
+%   range_resolution    vertical resolution of the system (m), default 0.53
 %   layer_file     explicit CSARP_layer path, '' = derive it
 %   out_file       save the result here, '' = do not save
-%   plotter        1 = debug figure (needs a display), default 0
-%   full_window_in_ice  require the whole window inside the ice column,
-%                  not just its centre (default true)
-%   solver_params  struct forwarded to RollingRadon (snr_thresh, ...)
 %   verbose        default true
 %
 % Returns a struct R with
-%   .slope_x    [1 x m] along-track distance of each window centre (m)
-%   .slope_z    [1 x n] depth below surface of each window centre (m)
-%   .slopes     [n x m] layer dip (deg); positive = deepening with +x
-%   .lat,.lon,.x,.y   geolocation of each slope column
-%   .bed_z      bed depth at each slope column (m)
-%   .param      everything needed to reproduce the run
+%   .slope_x, .slope_z   window centres (m)
+%   .slopes              [n x m] slope in degrees (see convention above)
+%   .q                   [n x m] Radon criterion peak/median
+%   .status              0 solved, 1 outside ice, 2 low quality, 3 slope gate
+%   .lat,.lon,.x,.y      geolocation of each slope column
+%   .bed_z               bed depth at each column (m)
+%   .param               everything needed to reproduce the run
 %
-% The input file is opened read-only and is never written to.
-%
-% See also OPR_LOAD_ECHOGRAM, OPR_FLATTEN_GRID, ROLLINGRADON
+% See also LS_ROLLING_RADON, LS_RADON_DIP, OPR_FLATTEN_GRID, PLOT_SLOPE_FIELD
+
+here = fileparts(mfilename('fullpath'));
+addpath(fullfile(here,'..','src'));
 
 p = local_options(varargin{:});
 
@@ -70,156 +66,70 @@ end
 D = opr_load_echogram(data_file, struct( ...
     'layer_file', p.layer_file, 'verbose', p.verbose));
 
-% No bed pick is normal for deep interior sites where this radar does not
-% reach the bed. Fall back to an assumed thickness rather than refusing to
-% run, and say so.
-have_bed = any(isfinite(D.bed_twtt));
-if ~have_bed && isempty(p.z_max) && p.verbose
-    fprintf('    no bed pick; assuming %.0f m of ice (bed_default)\n', ...
-        p.bed_default);
+if ~any(isfinite(D.bed_twtt)) && isempty(p.z_max) && p.verbose
+    fprintf('    no bed pick; assuming %.0f m of ice (bed_default)\n', p.bed_default);
 end
 
 % --- grid ---------------------------------------------------------------
 G = opr_flatten_grid(D, struct( ...
-    'grid_spacing', p.grid_spacing, 'z_pad_bed', p.z_pad_bed, ...
-    'z_max', p.z_max, 'bed_default', p.bed_default, ...
-    'detrend_len', p.detrend_len, ...
-    'smooth_len', p.smooth_len, 'smooth_x', p.smooth_x, ...
-    'exclude_z', p.exclude_z, ...
-    'agc_len', p.agc_len, ...
-    'trace_balance', p.trace_balance, 'vert_exag', p.vert_exag, ...
+    'grid_spacing', p.grid_spacing, 'vert_exag', p.vert_exag, ...
+    'z_pad_bed', p.z_pad_bed, 'z_max', p.z_max, ...
+    'bed_default', p.bed_default, 'exclude_z', p.exclude_z, ...
+    'detrend_len', p.detrend_len, 'smooth_len', p.smooth_len, ...
+    'smooth_x', p.smooth_x, 'trace_balance', p.trace_balance, ...
     'verbose', p.verbose));
 
-% --- window sizing ------------------------------------------------------
-% Columns are dx apart, rows dz apart.
-window_samples = round([p.window_x/G.dx, p.window_z/G.dz]);
-window_samples = window_samples + (mod(window_samples,2) == 0);
-if any(window_samples < 9)
-    error('RollingRadon_OPR:windowTooSmall', ...
-        ['A %g x %g m window at %g m grid spacing is only %d x %d samples. ' ...
-         'Use a larger window or a finer grid.'], p.window_x, p.window_z, ...
-        p.grid_spacing, window_samples(1), window_samples(2));
-end
-if window_samples(1) > size(G.img,2) || window_samples(2) > size(G.img,1)
-    error('RollingRadon_OPR:windowTooLarge', ...
-        ['A %g x %g m window is %d x %d samples, larger than the %d x %d ' ...
-         'grid. Use a smaller window.'], p.window_x, p.window_z, ...
-        window_samples(1), window_samples(2), size(G.img,2), size(G.img,1));
-end
-
-% The vertical window has to be much larger than the range resolution or
-% there is no layering inside it to measure.
-if p.window_z < 10*p.range_resolution
-    warning('RollingRadon_OPR:thinWindow', ...
-        ['A %g m vertical window is only %.0f range resolution cells ' ...
-         '(%.2f m). The dip estimate will be poorly constrained.'], ...
-        p.window_z, p.window_z/p.range_resolution, p.range_resolution);
-end
-
-% Surface/bed gate, in the same depth-below-surface metres as the y axis.
+% --- gates --------------------------------------------------------------
 % Where the bed is unpicked, gate on the bottom of the gridded column
-% instead of NaN - a NaN bound makes the ice-column test false everywhere,
-% which yields an all-NaN slope field with no indication of why.
+% rather than NaN: a NaN bound makes the ice-column test false everywhere
+% and yields an all-NaN field with no indication of why.
 bed_gate = G.bed_z;
 nanbed = ~isfinite(bed_gate);
 if any(nanbed)
     bed_gate(nanbed) = G.z(end);
-    if p.verbose && any(isfinite(G.bed_z))
-        fprintf('    %d/%d columns have no bed pick; gating those at %.0f m\n', ...
-            sum(nanbed), numel(bed_gate), G.z(end));
-    end
 end
 surf_gate = repmat(p.z_pad_surface, 1, numel(G.x));
 
-% RollingRadon tests only the window CENTRE against these bounds, so a
-% window whose centre sits just above the bed still has half its height in
-% the dead zone below it - and a Radon transform is perfectly happy to
-% return a confident dip for noise. Pull the bounds in by half a window so
-% the whole window has to be inside the ice.
-if p.full_window_in_ice
-    surf_gate = surf_gate + p.window_z/2;
-    bed_gate = bed_gate - p.window_z/2;
-end
-surface_bottom = [surf_gate; bed_gate];
-
-% Dip thresholds are given in TRUE degrees; the solver sees the
-% exaggerated grid, so convert. tan(apparent) = vert_exag*tan(true).
-app = @(t) atand(p.vert_exag*tand(t));
-dip_max_app = min(89, app(p.dip_max));
-dip_acc_app = min(89, app(p.dip_accept));
-solver_params = p.solver_params;
-if ~isempty(p.dip_step) && ~isfield(solver_params,'d_theta')
-    solver_params.d_theta = app(p.dip_step);
-end
-
-if all(bed_gate <= surf_gate)
-    error('RollingRadon_OPR:noRoom', ...
-        ['A %g m vertical window leaves no depth range fully inside the ' ...
-         'ice (usable column is %.0f m). Use a smaller window, or set ' ...
-         'full_window_in_ice to false.'], p.window_z, ...
-        max(G.bed_z) - p.z_pad_surface);
-end
-
-if p.verbose
-    if p.vert_exag ~= 1
-        fprintf('    vertical exaggeration %gx: a %.2f deg dip presents as %.2f deg\n', ...
-            p.vert_exag, p.dip_max/10, app(p.dip_max/10));
-    end
-    fprintf('    window %g x %g m = %d x %d samples (%.0f traces, %.0f range cells)\n', ...
-        p.window_x, p.window_z, window_samples(1), window_samples(2), ...
-        p.window_x/median(diff(D.dist)), p.window_z/p.range_resolution);
-    fprintf('    dip search +/- %g deg true (+/- %.1f deg on the solver grid)\n', ...
-        p.dip_max, dip_max_app);
-    % Smallest dip that displaces a layer by one range cell across the window
-    fprintf('    one range cell across the window = %.3f deg\n', ...
-        atand(p.range_resolution/p.window_x));
-    fprintf('  running rolling radon ...\n');
+if p.window_z < 10*p.range_resolution
+    warning('RollingRadon_OPR:thinWindow', ...
+        ['A %g m vertical window is only %.0f range-resolution cells. ' ...
+         'The slope will be poorly constrained.'], ...
+        p.window_z, p.window_z/p.range_resolution);
 end
 
 % --- solve --------------------------------------------------------------
-% The grid is already isotropic, so regrid() inside RollingRadon takes its
-% skip-interpolation branch and radon_ndh does no aspect correction. Note
-% max_frequency is deliberately NOT passed: supplying it would send regrid
-% down the resampling path this driver has already done properly.
-t0 = tic;
-[~, ~, ~, opt_x, opt_y, opt_angle, status_flag] = RollingRadon( ...
-    G.x_solver, G.z, G.img, window_samples, [dip_max_app dip_acc_app], ...
-    p.plotter, surface_bottom, 0, [], [], solver_params);
-runtime = toc(t0);
+S = ls_rolling_radon(G, struct( ...
+    'window_x', p.window_x, 'window_z', p.window_z, ...
+    'overlap_x', p.overlap_x, 'overlap_z', p.overlap_z, ...
+    'slope_max', p.dip_max, 'slope_step', p.dip_step, ...
+    'slope_accept', p.dip_accept, 'q_thresh', p.q_thresh, ...
+    'surface_z', surf_gate, 'bed_z', bed_gate, ...
+    'whole_window_in_ice', p.full_window_in_ice, 'verbose', p.verbose));
 
 % --- assemble -----------------------------------------------------------
-keep = opt_x ~= 0;
-keep(1) = true;                       % the first centre legitimately can be 0
-% opt_x came back on the isotropic-looking axis; put it back in metres.
-slope_x = opt_x(keep)*p.vert_exag;
-slopes = opt_angle(:, keep(1:size(opt_angle,2)));
-status = status_flag(:, keep(1:size(status_flag,2)));
-% Undo the exaggeration: tan(true) = tan(apparent)/vert_exag.
-slopes = atand(tand(slopes)/p.vert_exag);
-
 R = struct();
-R.slope_x = slope_x;
-R.slope_z = opt_y;
-R.slopes = slopes;
-% Continuity of the field along track: how much a dip changes between
-% horizontally adjacent cells. A coherent stratigraphy gives a small
-% number; a field of independent guesses gives a large one.
-dh = diff(slopes, 1, 2);
-R.continuity = median(abs(dh(isfinite(dh))));
-R.status = status;        % 0 solved, 1 outside ice, 2 low SNR, 3 slope rejected
-R.bed_z = interp1(G.x, G.bed_z, slope_x, 'linear', NaN);
-R.lat = interp1(D.dist, D.lat, slope_x, 'linear', NaN);
-R.lon = interp1(D.dist, D.lon, slope_x, 'linear', NaN);
-R.x = interp1(D.dist, D.x, slope_x, 'linear', NaN);
-R.y = interp1(D.dist, D.y, slope_x, 'linear', NaN);
+R.slope_x = S.slope_x;
+R.slope_z = S.slope_z;
+R.slopes = S.slopes;
+R.q = S.q;
+R.status = S.status;
+R.bed_z = interp1(G.x, G.bed_z, S.slope_x, 'linear', NaN);
+R.lat = interp1(D.dist, D.lat, S.slope_x, 'linear', NaN);
+R.lon = interp1(D.dist, D.lon, S.slope_x, 'linear', NaN);
+R.x = interp1(D.dist, D.x, S.slope_x, 'linear', NaN);
+R.y = interp1(D.dist, D.y, S.slope_x, 'linear', NaN);
 R.grid = struct('x', G.x, 'z', G.z, 'bed_z', G.bed_z, ...
-    'grid_spacing', G.grid_spacing, 'c_ice', G.c_ice);
+    'grid_spacing', G.grid_spacing, 'vert_exag', G.vert_exag, 'c_ice', G.c_ice);
+
+dh = diff(R.slopes, 1, 2);
+R.continuity = median(abs(dh(isfinite(dh))));
+
 R.param = p;
 R.param.data_file = data_file;
-R.param.window_samples = window_samples;
+R.param.window_samples = S.window_samples;
 R.param.bed_source = D.bed_source;
 R.param.surface_source = D.surface_source;
-R.param.runtime_s = runtime;
+R.param.runtime_s = S.runtime_s;
 R.param.created = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
 
 nfin = sum(isfinite(R.slopes(:)));
@@ -228,64 +138,57 @@ R.param.n_windows = numel(R.slopes);
 
 if p.verbose
     fprintf('  done in %.1f min: %d/%d windows solved (%.1f%%)\n', ...
-        runtime/60, nfin, numel(R.slopes), 100*nfin/max(1,numel(R.slopes)));
+        S.runtime_s/60, nfin, numel(R.slopes), ...
+        100*nfin/max(1,numel(R.slopes)));
     if nfin > 0
         v = R.slopes(isfinite(R.slopes));
-        fprintf('    dip: median %.2f deg, IQR %.2f to %.2f, range %.2f to %.2f\n', ...
+        fprintf('    slope: median %+.3f deg, IQR %+.3f to %+.3f, range %+.3f to %+.3f\n', ...
             median(v), prctile(v,25), prctile(v,75), min(v), max(v));
+        fprintf('    sign consistency %.2f, continuity %.3f deg\n', ...
+            mean(sign(v)==sign(median(v))), R.continuity);
     end
-    if isfinite(R.continuity)
-        fprintf('    along-track continuity: median |d(dip)| between adjacent cells = %.3f deg\n', ...
-            R.continuity);
-    end
-    rej = R.status(~isfinite(R.slopes));
+    st = R.status(~isfinite(R.slopes));
     n = numel(R.slopes);
-    fprintf('    rejected: %d outside ice (%.0f%%), %d low SNR (%.0f%%), %d slope gate (%.0f%%)\n', ...
-        sum(rej==1), 100*sum(rej==1)/n, sum(rej==2), 100*sum(rej==2)/n, ...
-        sum(rej==3), 100*sum(rej==3)/n);
+    fprintf('    rejected: %d outside ice (%.0f%%), %d low quality (%.0f%%), %d slope gate (%.0f%%)\n', ...
+        sum(st==1), 100*sum(st==1)/n, sum(st==2), 100*sum(st==2)/n, ...
+        sum(st==3), 100*sum(st==3)/n);
 end
 
 % --- save ---------------------------------------------------------------
-% Always to a separate file. Writing results back into the echogram is the
-% bug that contaminated the shared product in the first place.
+% Always to a separate file; the echogram is never written to.
 if ~isempty(p.out_file)
-    out_dir = fileparts(p.out_file);
-    if ~isempty(out_dir) && exist(out_dir,'dir') ~= 7
-        mkdir(out_dir);
-    end
+    d = fileparts(p.out_file);
+    if ~isempty(d) && exist(d,'dir') ~= 7, mkdir(d); end
     save(p.out_file, '-struct', 'R', '-v7.3');
-    if p.verbose
-        fprintf('  wrote %s\n', p.out_file);
-    end
+    if p.verbose, fprintf('  wrote %s\n', p.out_file); end
 end
 end
 
 % ------------------------------------------------------------------------
 function p = local_options(varargin)
-p.grid_spacing = 2;
-p.window = [];          % legacy square window (m); sets both if given
-p.window_x = 120;
-p.window_z = 30;
-p.dip_max = 20;
+p.grid_spacing = 0.25;
+p.vert_exag = 20;
+p.window_x = 1000;
+p.window_z = 20;
+p.overlap_x = 0.25;
+p.overlap_z = 0.25;
+p.dip_max = 1;
 p.dip_accept = [];
+p.dip_step = 0.005;
+p.q_thresh = 1.5;
 p.z_pad_surface = 30;
 p.z_pad_bed = 25;
 p.z_max = [];
-p.bed_default = 1500;   % assumed ice thickness (m) when no bed pick exists
-p.detrend_len = 0;      % depth high-pass OFF by default
-p.smooth_len = 1.5;     % depth low-pass at the layer scale
-p.smooth_x = 60;        % along-track low-pass; kills the vertical striping
-p.exclude_z = [];       % N x 2 depth bands (m) to blank, e.g. pulse merge
-p.agc_len = 0;
+p.bed_default = 1500;
+p.exclude_z = [];
+p.smooth_x = 60;
+p.smooth_len = 1.5;
+p.detrend_len = 30;
 p.trace_balance = true;
+p.full_window_in_ice = true;
+p.range_resolution = 0.53;
 p.layer_file = '';
 p.out_file = '';
-p.plotter = 0;
-p.full_window_in_ice = true;
-p.range_resolution = 0.53;   % m in ice, accum radar (~159 MHz bandwidth)
-p.vert_exag = 1;             % along-track spacing = grid_spacing*vert_exag
-p.dip_step = [];             % deg of TRUE dip; [] = radon_ndh default
-p.solver_params = struct();
 p.verbose = true;
 
 if mod(numel(varargin),2) ~= 0
@@ -300,39 +203,7 @@ for i = 1:2:numel(varargin)
     p.(name) = varargin{i+1};
 end
 
-% Solver defaults that differ from RollingRadon's built-ins, for reasons
-% that matter on real data:
-%
-%   vr = 1      RollingRadon's continuity filter replaces a window that
-%               deviates from the one above it with the previous value and
-%               carries that value forward, which draws constant-dip
-%               columns through the field. vr = 1 keeps each measurement
-%               instead. Raise it to re-enable the original smoothing.
-%   snr_thresh  left at Holschuh's 2. It is an absolute dB threshold on
-%               2*std of the window, so it tracks the conditioning; raising
-%               it to suit one depth band can empty another.
-% snr_thresh stays at Holschuh's published value. An earlier default of 4
-% here rejected every window in the shallow 30-70 m band of the
-% accumulation data: the gate is 2*std of the window's centre column in dB,
-% so it scales with whatever conditioning is applied upstream, and a value
-% tuned against one band silently suppresses another.
-defaults = struct('vr', 1, 'snr_thresh', 2, 'radon_snr_thresh', 0);
-fn = fieldnames(defaults);
-for i = 1:numel(fn)
-    if ~isfield(p.solver_params, fn{i})
-        p.solver_params.(fn{i}) = defaults.(fn{i});
-    end
-end
-
-if ~isempty(p.window)
-    p.window_x = p.window;
-    p.window_z = p.window;
-end
-p.window = [p.window_x p.window_z];
-
-if isempty(p.dip_accept)
-    p.dip_accept = p.dip_max - 5;
-end
+if isempty(p.dip_accept), p.dip_accept = p.dip_max; end
 if p.dip_accept > p.dip_max
     error('RollingRadon_OPR:badDip', ...
         'dip_accept (%g) cannot exceed dip_max (%g).', p.dip_accept, p.dip_max);
@@ -340,7 +211,8 @@ end
 if p.dip_max <= 0 || p.dip_max >= 90
     error('RollingRadon_OPR:badDip','dip_max must be in (0,90).');
 end
-if p.grid_spacing <= 0 || any(p.window <= 0)
-    error('RollingRadon_OPR:badSize','grid_spacing and window must be positive.');
+if p.grid_spacing <= 0 || p.window_x <= 0 || p.window_z <= 0
+    error('RollingRadon_OPR:badSize', ...
+        'grid_spacing and window sizes must be positive.');
 end
 end

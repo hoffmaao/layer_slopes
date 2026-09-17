@@ -12,8 +12,7 @@ function n_fail = test_vert_exag()
 here = fileparts(mfilename('fullpath'));
 addpath(fullfile(here,'..','src')); addpath(fullfile(here,'..','opr'));
 n_fail = 0;
-cice_import
-c = cice;
+c = ls_cice();
 
 tmp = tempname; mkdir(tmp);
 cleaner = onCleanup(@() rmdir(tmp,'s'));
@@ -21,18 +20,18 @@ cleaner = onCleanup(@() rmdir(tmp,'s'));
 ntrace = 3400;
 lat = -86.70 - (0:ntrace-1)*5.0e-5;
 lon = 68.6*ones(1,ntrace);
-[px,py] = polarstereo_fwd(lat,lon,0);
+[px,py] = ls_polarstereo_fwd(lat,lon,0);
 dist = [0 cumsum(hypot(diff(px),diff(py)))];
 
 dt = 1.6667e-9; nt = 9000;
 twtt = (0:nt-1)'*dt;
 depth = twtt*c/2;
 
-true_dip = 0.12;            % deg - the real scale of interior layer dip
+true_dip = 0.12;            % deg, + = RISES with +x; interior scale
 lambda = 12;                % m, matching the observed spectral peak
 
 [Dist, Depth] = meshgrid(dist, depth);
-db = 10*sin(2*pi*(Depth - tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
+db = 10*sin(2*pi*(Depth + tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
 db(Depth > 300) = -130;
 Data = single(10.^(db/10));
 Time = twtt; Latitude = lat; Longitude = lon;
@@ -44,7 +43,7 @@ save(f,'Data','Time','Latitude','Longitude','Surface','Bottom', ...
 
 common = {'grid_spacing',0.25,'window_x',1000,'window_z',40, ...
     'z_pad_surface',40,'z_max',260,'smooth_len',0,'detrend_len',20, ...
-    'dip_max',1,'dip_accept',0.9,'verbose',false};
+    'smooth_x',0,'dip_max',1,'dip_accept',0.9,'verbose',false};
 
 % ---- with exaggeration -------------------------------------------------
 R = RollingRadon_OPR(f, common{:}, 'vert_exag',20, 'dip_step',0.005);
@@ -60,7 +59,7 @@ else
 end
 
 % ---- mirrored dip keeps its sign --------------------------------------
-db2 = 10*sin(2*pi*(Depth + tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
+db2 = 10*sin(2*pi*(Depth - tand(true_dip)*Dist)/lambda) - 60 - 0.02*Depth;
 db2(Depth > 300) = -130;
 Data = single(10.^(db2/10));
 f2 = fullfile(tmp,'Data_ve_01_002.mat');
@@ -75,26 +74,30 @@ else
     fprintf('  ok   mirrored dip %.4f deg (true %+.3f)\n', median(v2), -true_dip);
 end
 
-% ---- control: without exaggeration the answer is quantised -------------
-% The Radon searches on a fixed angular grid. On an isotropic grid that
-% step IS the measurement for a 0.12 deg layer, so every window returns a
-% multiple of it; the exaggerated grid resolves inside one step. Compare
-% the quantisation, not the median - a coarse grid can still land near the
-% right answer by luck, which is exactly what makes it misleading.
-R3 = RollingRadon_OPR(f, common{:}, 'vert_exag',1);
+% ---- vert_exag is EXACT, not merely helpful ---------------------------
+% tan(apparent) = vert_exag*tan(true) is an identity, so exaggerating and
+% then inverting must return the same answer as not exaggerating at all.
+% That is the property worth guarding: vert_exag buys speed (vert_exag
+% times fewer pixels per window), not accuracy.
+%
+% It used to buy accuracy too, when the criterion was the peak amplitude of
+% the projection - a sub-pixel slope then had nothing to lock onto. With the
+% variance criterion and sub-step refinement in LS_RADON_DIP the plain grid
+% resolves 0.12 deg on its own, so the exaggeration is now an optimisation.
+R3 = RollingRadon_OPR(f, common{:}, 'vert_exag',1, 'dip_step',0.01);
 v3 = R3.slopes(isfinite(R3.slopes));
-q_plain = numel(unique(round(v3,4)));
-q_exag  = numel(unique(round(v,4)));
 if isempty(v3)
-    fprintf('  ok   control: vert_exag 1 solves nothing\n');
-elseif q_exag <= q_plain
-    fprintf(['  FAIL control: exaggerated grid gives %d distinct dips, ' ...
-        'plain grid %d - no gain in resolution\n'], q_exag, q_plain);
-    n_fail = n_fail+1;
+    fprintf('  FAIL plain grid solved nothing\n'); n_fail = n_fail + 1;
 else
-    fprintf(['  ok   control: plain grid returns %d distinct dip value(s) ' ...
-        '(quantised at %.3f deg); exaggerated returns %d\n'], ...
-        q_plain, 0.1, q_exag);
+    d = abs(median(v3) - median(v));
+    if d > 0.01
+        fprintf(['  FAIL exaggerated and plain grids disagree by %.4f deg ' ...
+            '- the mapping is not being inverted correctly\n'], d);
+        n_fail = n_fail + 1;
+    else
+        fprintf(['  ok   exaggerated %.4f and plain %.4f agree to %.4f deg ' ...
+            '(mapping is exact)\n'], median(v), median(v3), d);
+    end
 end
 
 % ---- the geometry itself: x and dips come back in real units ----------

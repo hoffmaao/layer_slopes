@@ -19,7 +19,6 @@ out_dir = '/kucresis/scratch/hoffmana_sta/layer_slopes/products/diag';
 if exist(out_dir,'dir') ~= 7, mkdir(out_dir); end
 
 D = opr_load_echogram(data_file, struct('verbose',false));
-cice_import
 
 % Native-resolution, surface-flattened, NO conditioning at all.
 G0 = opr_flatten_grid(D, struct('grid_spacing',0.25, 'z_pad_bed',25, ...

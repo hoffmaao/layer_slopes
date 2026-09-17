@@ -66,10 +66,14 @@ See `docs/ATTRIBUTION.md` for exactly what came from where and what changed.
 
 ## Requirements
 
-MATLAB with the Image Processing (`radon`), Statistics (`normpdf`) and Signal
-Processing toolboxes. Tested on R2024b (`/opt/sw/matlab/2024b/bin/matlab` on
-the CReSIS machines). Nothing else - the Holschuh helpers are vendored in
-`src/`, including `cice_import.m`, which upstream does not ship.
+MATLAB with the Image Processing Toolbox (`radon`) and Statistics Toolbox
+(`prctile`). Tested on R2024b (`/opt/sw/matlab/2024b/bin/matlab` on the
+CReSIS machines).
+
+**No other dependency.** This repository contains no code from
+`SlopeExtraction_Radar` or `NDH_MatlabTools` - neither needs to be on the
+path. The method is Holschuh's and is cited; the implementation is our own.
+See `docs/ATTRIBUTION.md`.
 
 ## Install and run on the CReSIS servers
 
@@ -91,32 +95,50 @@ cd tests
 /opt/sw/matlab/2024b/bin/matlab -batch "run_tests"
 ```
 
-Then run a profile. The examples resolve their own paths, so they work from
+Then run a profile. The scripts resolve their own paths, so they work from
 any checkout location:
 
 ```bash
 cd ../examples
 nice -n 10 /opt/sw/matlab/2024b/bin/matlab -batch \\
-    "maxNumCompThreads(8); run_slopes_2024_Antarctica_Ground2"
+    "maxNumCompThreads(8); run_slopes; make_slope_figure"
 ```
 
-That processes the 20 km mega-dune profile `20250108_02_005` from
-`CSARP_post/CSARP_standard` - the same posted product `imb.picker` displays -
-and writes a `.mat` and a `.png` under
-`/kucresis/scratch/$USER/layer_slopes/products/`. Frame, product and output
-location can all be overridden on the command line:
+There are three scripts and one config:
+
+| file | does |
+|---|---|
+| `ls_config.m` | the target frame and every solver setting, in one place |
+| `run_slopes.m` | computes the slope field, saves a `.mat` |
+| `make_slope_figure.m` | slope field over the power image, saves a `.png` |
+| `make_window_movie.m` | animated GIF of the windows the Radon is fed |
+
+All three read `ls_config.m`, so they cannot drift apart. The default target
+is the 20 km mega-dune profile `20250108_02_005` from
+`CSARP_post/CSARP_standard_HH` - the SAR-focused product, so the layers are
+migrated. Output goes under
+`/kucresis/scratch/$USER/layer_slopes/products/`.
+
+`make_window_movie` steps the solver's own window in raster order, left to
+right along a row then down to the next, and shows for each one the window
+exactly as the estimator receives it, the fitted slope drawn on it, and the
+criterion against candidate slope. It is the tool for answering "why did it
+return that?" - a flat criterion means the window had nothing to lock onto
+and should be abstaining.
+
+The frame can be overridden from the command line; anything else is edited
+in `ls_config.m`:
 
 ```bash
-matlab -batch "frame='20250108_02_001'; run_slopes_2024_Antarctica_Ground2"
-matlab -batch "out_dir='/kucresis/scratch/$USER/slopes'; run_slopes_2024_Antarctica_Ground2"
-matlab -batch "run_slopes_2025_Antarctica_Ground2"    # Ridge A, 2025 season
+matlab -batch "frame='20250108_02_001'; run_slopes"
+matlab -batch "make_window_movie"
 ```
 
 Long lines are worth detaching, since nothing needs a terminal:
 
 ```bash
 nohup nice -n 10 /opt/sw/matlab/2024b/bin/matlab -batch \\
-    "run_slopes_2024_Antarctica_Ground2" > run.log 2>&1 &
+    "run_slopes" > run.log 2>&1 &
 ```
 
 `maxNumCompThreads(8)` and `nice` keep a shared node usable; neither is
@@ -183,35 +205,39 @@ cd tests && matlab -batch "run_tests"
 covers the unit bug, and `test_opr_units` drives the whole OPR path over a
 synthetic echogram with a known dip - including the all-NaN `Bottom` case.
 
-## Multi-scale: small features and small dips
+## Multi-scale: small features and small slopes
 
-The two window dimensions have independent limits on this radar, and they
-pull opposite ways. Measured on `20250108_02_005` (`tests/sweep_scales.m`):
+The two window dimensions have independent limits and pull opposite ways.
+Measured on `20250108_02_005` against an independently tracked horizon
+(`tests/validate_horizon.m`):
 
-| `window_x` | dip floor | sign consistency |
+| `window_x` | smallest measurable slope | regression gain vs truth |
 |---|---|---|
-| 500 m | 0.061 deg - the size of the signal | 0.61 |
-| 1000 m | 0.030 deg | 0.67 |
-| **2000 m** | **0.015 deg** | **0.82** |
-| 4000 m | 0.008 deg, but the median collapses toward zero | 0.65-0.82 |
+| 750 m | 0.040 deg | 0.99 |
+| **1000 m** | **0.030 deg** | **0.96** |
+| 2000 m | 0.015 deg | 0.86 |
+| 3000 m | 0.010 deg | 0.71 |
 
-`window_z`, by contrast, is cheap: the system resolves 0.53 m and layers sit
-~8 m apart, so a 10 m window still holds several layer cycles. Fine depth
-detail is exactly what the image resolution buys.
+A long window sees smaller slopes but averages over a range of true ones and
+regresses toward their mean. `window_z` is different: it is cheap, because
+the system resolves 0.53 m and layers sit ~8 m apart, so a 15-20 m window
+still holds several cycles. Sampling MORE layers actively hurts - gain falls
+from 0.86 at 20 m to 0.74 at 100 m, because dip varies with depth and a tall
+window averages across it.
 
-So no single window both resolves small features and sees small dips.
-`slope_multiscale` runs several scales and keeps the finest one whose answer
-the next coarser scale corroborates, which on this frame takes coverage from
-25% (finest scale alone, sign consistency 0.67) to **58% at sign consistency
-0.90**, with **72% of cells coming from the finest scale**.
+So no single window both resolves small features and measures small slopes
+without bias. `slope_multiscale` runs several and keeps the finest whose
+answer the next coarser scale corroborates:
 
 ```matlab
-M = slope_multiscale(data_file, 'scales', [4000 30; 2000 20; 1000 10], ...);
+M = slope_multiscale(data_file, 'scales', [2000 30; 1000 20; 600 15], ...);
 plot_slope_field(M, 'multiscale.png');
 ```
 
-`examples/run_multiscale_2024_Antarctica_Ground2.m` runs this end to end.
-`M.scale` and `M.window_x` record which scale each cell came from.
+On this frame that gives **70% coverage at 0.93 sign consistency**, against
+0.87 for the best single scale, with 65% of cells coming from the finest
+scale. `M.scale` and `M.window_x` record which scale each cell came from.
+
 
 ## Validation
 
@@ -231,18 +257,22 @@ broken the method; the difficulty on accumulation-radar data is that 0.1 deg
 dips in the top 200 m of a 0.53 m-resolution image is a different and much
 harder problem than the one it was built for.
 
-The check that matters is against a real picked profile. On
-`20250108_02_005` the horizon visible in `imb.picker` runs from ~1.85 us at
-0 km to ~1.45 us at 20 km - about 35 m of relief over 20,000 m, a dip of
-**-0.10 deg**. The solver returns a median of **-0.10 deg** (IQR -0.15 to
--0.05) over 1023 solved windows, with the negative sign correctly saying
-the layers shallow with increasing distance, and a median change of
-0.010 deg between adjacent cells.
+The check that matters is against real data, and it does not use the Radon
+at all. `tests/validate_horizon.m` seeds on the bright reflector, follows it
+trace by trace under a continuity constraint, writes the pick out as a
+figure so it can be confirmed by eye, then differentiates it. On
+`20250108_02_005` that horizon rises from 158 m to 121 m over 20 km.
 
-Solving above and below the excluded pulse-merge band together gives 3934
-cells over 50-195 m depth, and the field resolves coherent lobes of
-alternating dip along track - the structure mega-dune mapping is looking
-for.
+Against that truth the calibrated settings give a **regression gain of
+0.96** and **r = 0.98** - the magnitude is right, not just the sign. Two
+things were needed to get there, and both were found this way rather than
+by guessing:
+
+- Without the depth high-pass the gain is 0.70 and r is 0.78, because a
+  window spans part of the power-vs-depth decay and that gradient is
+  horizontal.
+- A 2000 m window gives gain 0.86 and a 3000 m window 0.71, because a long
+  window averages across varying dip.
 
 ## Output
 
