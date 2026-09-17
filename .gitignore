@@ -1,0 +1,11 @@
+# products and figures stay out of the repo
+products/
+figs/
+*.png
+*.mat
+!tests/fixtures/*.mat
+
+# MATLAB
+*.asv
+*.autosave
+slprj/
