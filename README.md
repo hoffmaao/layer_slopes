@@ -125,38 +125,6 @@ cd tests && matlab -batch "run_tests"
 covers the unit bug, and `test_opr_units` drives the whole OPR path over a
 synthetic echogram with a known dip - including the all-NaN `Bottom` case.
 
-## Choosing the window
-
-The two window dimensions have independent limits and pull opposite ways.
-Measured on `20250108_02_005` against an independently tracked horizon
-(`tests/validate_horizon.m`), where `gain` is the regression slope of solver
-against truth and 1.00 would be unbiased:
-
-| `window_x` | smallest measurable slope | gain | r |
-|---|---|---|---|
-| 750 m | 0.040 deg | 0.99 | 0.98 |
-| **1000 m** | **0.030 deg** | **0.96** | **0.98** |
-| 2000 m | 0.015 deg | 0.85 | 0.97 |
-| 3000 m | 0.010 deg | 0.71 | 0.91 |
-
-A longer window sees smaller slopes but averages over a range of true ones
-and regresses toward their mean. 1000 m balances the two on this data.
-
-`window_z` behaves differently: it is cheap, because the system resolves
-0.53 m and layers sit ~8 m apart, so a 20 m window already holds several
-cycles. Sampling MORE layers actively hurts - gain falls from 0.86 at 20 m
-to 0.74 at 100 m, because dip varies with depth and a tall window averages
-across it.
-
-Combining several window sizes was tried and **did not help**. Merging
-scales on mutual agreement gave gain 0.86 and r 0.91 against 0.96 and 0.98
-for the best single scale. The reason is worth recording: the coarse scale
-is systematically biased low, so accepting cells where two scales agree
-preferentially selects cells that agree with that bias. Corroboration
-between estimators with different biases selects for the bias, not for
-truth. One calibrated window is better.
-
-
 ## Validation
 
 `tests/` covers the sign convention, the `regrid` unit bug, the whole OPR
