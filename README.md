@@ -21,49 +21,6 @@ See `docs/ATTRIBUTION.md` for exactly what came from where and what changed.
 
 ---
 
-
-## What the OPR front end does
-
-- **Reads strictly read-only.** Results always go to a separate file.
-- **Finds the bed.** The standard product ships an all-NaN `Bottom` for this
-  season; the bed is pulled from `CSARP_layer` (layer id 2) and interpolated
-  onto the frame's `GPS_time`.
-- **Crops to the ice column.** The example frame carries 32066 samples over
-  ~4.5 km of range for ~1 km of ice.
-- **Grids isotropically, once.** Radon needs square pixels. Native sampling is
-  0.14 m vertically against 5.9 m along track, so `radon_ndh` would otherwise
-  upsample every window ~42x.
-- **Conditions for layering, not gain.** A depth low-pass (`smooth_len`)
-  suppresses structure finer than the layering; per-trace balancing removes
-  profile-to-profile gain swings that show up as vertical striping and that
-  the Radon will otherwise lock onto. An optional depth high-pass
-  (`detrend_len`, off by default) removes the long-wavelength power envelope
-  when it dominates a window.
-- **Exaggerates vertically.** Interior layers dip ~0.1 deg, which is below
-  one range cell of displacement across any tractable window. See
-  `vert_exag` under *Choosing the parameters*.
-- **Removes the vertical striping.** Trace-to-trace gain changes draw
-  vertical stripes, and a stripe is a strong linear feature the Radon will
-  fit. `smooth_x` averages them away, and at these dips it is nearly free: a
-  0.1 deg layer moves 0.4 m across 250 m of track, inside one range cell.
-  This is the single biggest lever on how coherent the field looks -
-  along-track continuity improves from 0.130 to 0.010 deg between adjacent
-  cells, and sign consistency from 0.75 to 0.89.
-- **Gates honestly.** The whole window must sit inside the ice column, not
-  just its centre, and rejection reasons are returned in `R.status`.
-- **Masks the merged pulse return.** An accumulation radar's first and
-  second pulse returns merge at a fixed range (~75 m here), and that band is
-  a strong horizontal feature with no stratigraphic meaning. `exclude_z`
-  blanks it, so windows overlapping it abstain while the layering above and
-  below is still solved. The shallow section above the band carries some of
-  the clearest layering in the profile.
-- **Plots a continuous raster.** Overlapping windows drawn as raw cells make
-  a staircase of rectangles whose edges come from the window spacing, not
-  the ice. `plot_slope_field` interpolates onto a fine grid for the smooth
-  slope raster of Holschuh et al. (2017, fig. 3).
-
----
-
 ## Requirements
 
 MATLAB with the Image Processing Toolbox (`radon`) and Statistics Toolbox
@@ -157,43 +114,6 @@ R = RollingRadon_OPR(data_file, ...
         'out_file', 'slopes.mat');
 plot_slope_field(R, 'slopes.png');
 ```
-
-### Choosing the parameters
-
-Interior englacial layers dip by **~0.1 degrees**. Almost every setting
-follows from that number, and getting one wrong produces a slope field that
-looks plausible and means nothing.
-
-- **`vert_exag`** is what makes the measurement possible at all. A 0.1 deg dip
-  displaces a layer by 0.2 m across a 120 m window, less than the 0.53 m range
-  resolution, so it simply is not in the data. Sampling along track at
-  `vert_exag` times the vertical spacing and presenting the grid to the Radon
-  as isotropic multiplies the apparent dip by exactly `vert_exag`
-  (`tan(apparent) = vert_exag * tan(true)`), and the driver inverts it on
-  output. At 20x a 0.1 deg dip presents as 2 deg, for 20x fewer pixels per
-  window. `tests/test_vert_exag.m` shows the plain grid returning a single
-  quantised value where the exaggerated grid resolves thirteen.
-- **`window_x`** must be long enough that the dip displaces a layer by more
-  than one range cell. The solver prints that floor on every run
-  (`one range cell across the window = 0.030 deg` for a 1 km window); keep the
-  expected dip well above it.
-- **`dip_step`** was effectively 0.1 deg upstream, so the entire signal fit
-  inside a single search increment.
-- **`grid_spacing`** must sample the system's range resolution, 0.53 m in ice
-  for this radar (~159 MHz bandwidth). At 1-2 m the anti-alias average removes
-  the layering before the Radon sees it: low coverage, implausibly large dips.
-- **`window_z`** wants many range cells, but short enough that system power
-  drift is not the strongest linear feature in the window.
-- **`z_max` / `z_pad_surface`** decide whether you measure stratigraphy or
-  speckle. On `20250104_01_002` the 20-110 m band has 5.9 dB of band-passed
-  contrast and discrete spectral peaks at 1-11 m; the 120-600 m band has
-  1.5 dB, sits 5 dB above the noise floor at -122 dB, and has a FLAT spectrum
-  from 1 to 50 m, which is white noise. Run `tests/diag_layering.m` on a new
-  site before choosing the depth window.
-
-`R.status` reports why windows were rejected (1 outside ice, 2 low SNR,
-3 slope gate), which is the fastest way to tell whether a setting is too
-strict.
 
 ## Test
 
