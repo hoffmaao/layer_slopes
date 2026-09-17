@@ -49,6 +49,13 @@ if ischar(R) || isstring(R)
     R = load(char(R));
 end
 
+% SLOPE_MULTISCALE returns the merged field on .x/.z; ROLLINGRADON_OPR uses
+% .slope_x/.slope_z. Accept either.
+if ~isfield(R,'slope_x') && isfield(R,'x') && isfield(R,'slopes')
+    R.slope_x = R.x;
+    R.slope_z = R.z;
+end
+
 if isempty(o.seg_len)
     if isfield(R.param,'window_x')
         o.seg_len = R.param.window_x/6;

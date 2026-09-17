@@ -183,11 +183,53 @@ cd tests && matlab -batch "run_tests"
 covers the unit bug, and `test_opr_units` drives the whole OPR path over a
 synthetic echogram with a known dip - including the all-NaN `Bottom` case.
 
+## Multi-scale: small features and small dips
+
+The two window dimensions have independent limits on this radar, and they
+pull opposite ways. Measured on `20250108_02_005` (`tests/sweep_scales.m`):
+
+| `window_x` | dip floor | sign consistency |
+|---|---|---|
+| 500 m | 0.061 deg - the size of the signal | 0.61 |
+| 1000 m | 0.030 deg | 0.67 |
+| **2000 m** | **0.015 deg** | **0.82** |
+| 4000 m | 0.008 deg, but the median collapses toward zero | 0.65-0.82 |
+
+`window_z`, by contrast, is cheap: the system resolves 0.53 m and layers sit
+~8 m apart, so a 10 m window still holds several layer cycles. Fine depth
+detail is exactly what the image resolution buys.
+
+So no single window both resolves small features and sees small dips.
+`slope_multiscale` runs several scales and keeps the finest one whose answer
+the next coarser scale corroborates, which on this frame takes coverage from
+25% (finest scale alone, sign consistency 0.67) to **58% at sign consistency
+0.90**, with **72% of cells coming from the finest scale**.
+
+```matlab
+M = slope_multiscale(data_file, 'scales', [4000 30; 2000 20; 1000 10], ...);
+plot_slope_field(M, 'multiscale.png');
+```
+
+`examples/run_multiscale_2024_Antarctica_Ground2.m` runs this end to end.
+`M.scale` and `M.window_x` record which scale each cell came from.
+
 ## Validation
 
 `tests/` covers the sign convention, the `regrid` unit bug, the whole OPR
 path over a synthetic echogram, and sub-degree recovery under vertical
 exaggeration.
+
+**The method, as published, still works.** `test_holschuh_regime` builds a
+synthetic in the regime Holschuh et al. (2017) targeted - RDS/impulse radar,
+~2.8 m range resolution, layers 45 m apart, folds giving +/-15 deg reflector
+slopes - and runs it with Nick's own published defaults and every addition
+here switched off (no vertical exaggeration, no along-track smoothing, no
+trace balancing, `o_f` 2/6, `snr_thresh` 2, `vr` 3, Radon method 0). It
+recovers the dip with an **RMS error of 0.07 deg** and correlation
+**r = 1.000** against truth, at 72% coverage. Nothing in this repo has
+broken the method; the difficulty on accumulation-radar data is that 0.1 deg
+dips in the top 200 m of a 0.53 m-resolution image is a different and much
+harder problem than the one it was built for.
 
 The check that matters is against a real picked profile. On
 `20250108_02_005` the horizon visible in `imb.picker` runs from ~1.85 us at

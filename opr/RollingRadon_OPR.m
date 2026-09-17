@@ -308,9 +308,15 @@ end
 %               carries that value forward, which draws constant-dip
 %               columns through the field. vr = 1 keeps each measurement
 %               instead. Raise it to re-enable the original smoothing.
-%   snr_thresh  2 dB passes almost anything once the image is depth
-%               detrended; 4 dB actually discriminates.
-defaults = struct('vr', 1, 'snr_thresh', 4, 'radon_snr_thresh', 0);
+%   snr_thresh  left at Holschuh's 2. It is an absolute dB threshold on
+%               2*std of the window, so it tracks the conditioning; raising
+%               it to suit one depth band can empty another.
+% snr_thresh stays at Holschuh's published value. An earlier default of 4
+% here rejected every window in the shallow 30-70 m band of the
+% accumulation data: the gate is 2*std of the window's centre column in dB,
+% so it scales with whatever conditioning is applied upstream, and a value
+% tuned against one band silently suppresses another.
+defaults = struct('vr', 1, 'snr_thresh', 2, 'radon_snr_thresh', 0);
 fn = fieldnames(defaults);
 for i = 1:numel(fn)
     if ~isfield(p.solver_params, fn{i})
