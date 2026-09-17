@@ -22,7 +22,7 @@ See `docs/ATTRIBUTION.md` for exactly what came from where and what changed.
 ---
 
 
-### What the OPR front end does
+## What the OPR front end does
 
 - **Reads strictly read-only.** Results always go to a separate file.
 - **Finds the bed.** The standard product ships an all-NaN `Bottom` for this
