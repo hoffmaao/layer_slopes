@@ -131,34 +131,9 @@ synthetic echogram with a known dip - including the all-NaN `Bottom` case.
 path over a synthetic echogram, and sub-degree recovery under vertical
 exaggeration.
 
-**The method, as published, still works.** `test_holschuh_regime` builds a
-synthetic in the regime Holschuh et al. (2017) targeted - RDS/impulse radar,
-~2.8 m range resolution, layers 45 m apart, folds giving +/-15 deg reflector
-slopes - and runs it with Nick's own published defaults and every addition
-here switched off (no vertical exaggeration, no along-track smoothing, no
-trace balancing, `o_f` 2/6, `snr_thresh` 2, `vr` 3, Radon method 0). It
-recovers the dip with an **RMS error of 0.07 deg** and correlation
-**r = 1.000** against truth, at 72% coverage. Nothing in this repo has
-broken the method; the difficulty on accumulation-radar data is that 0.1 deg
-dips in the top 200 m of a 0.53 m-resolution image is a different and much
-harder problem than the one it was built for.
-
-The check that matters is against real data, and it does not use the Radon
-at all. `tests/validate_horizon.m` seeds on the bright reflector, follows it
-trace by trace under a continuity constraint, writes the pick out as a
-figure so it can be confirmed by eye, then differentiates it. On
-`20250108_02_005` that horizon rises from 158 m to 121 m over 20 km.
-
-Against that truth the calibrated settings give a **regression gain of
-0.96** and **r = 0.98** - the magnitude is right, not just the sign. Two
-things were needed to get there, and both were found this way rather than
-by guessing:
-
-- Without the depth high-pass the gain is 0.70 and r is 0.78, because a
-  window spans part of the power-vs-depth decay and that gradient is
-  horizontal.
-- A 2000 m window gives gain 0.86 and a 3000 m window 0.71, because a long
-  window averages across varying dip.
+`test_holschuh_regime` builds a synthetic test case and runs it with Nick's own 
+published defaults. It recovers the dip with an **RMS error of 0.07 deg** and correlation
+**r = 1.000** against truth. 
 
 ## Output
 
