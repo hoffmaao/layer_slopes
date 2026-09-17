@@ -177,7 +177,7 @@ by guessing:
 ## Layout
 
 ```
-src/      Holschuh's functions, with the fixes above
+src/      Holschuh functions, with small fixes
 opr/      OPR/CReSIS front end and the standard figure
 examples/ runnable drivers, one per season
 tests/    regression suite, plus diag_layering.m for siting the depth window
