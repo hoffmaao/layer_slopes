@@ -6,9 +6,15 @@ here = fileparts(mfilename('fullpath'));
 addpath(fullfile(here,'..','src'));
 addpath(fullfile(here,'..','opr'));
 
-data_file = ['/kucresis/scratch/dataproducts/opr_data/accum/' ...
-    '2025_Antarctica_Ground2/CSARP_standard_HH/20260109_02/' ...
-    'Data_20260109_02_003.mat'];
+if ~exist('data_file','var')
+    data_file = ['/kucresis/scratch/dataproducts/opr_data/accum/' ...
+        '2025_Antarctica_Ground2/CSARP_standard_HH/20260109_02/' ...
+        'Data_20260109_02_003.mat'];
+end
+if ~exist('tag','var'), tag = 'ridgeA'; end
+if ~exist('zband','var'), zband = [150 450]; end
+if ~exist('zoom_x','var'), zoom_x = [200 700]; end
+if ~exist('zoom_z','var'), zoom_z = [100 300]; end
 out_dir = '/kucresis/scratch/hoffmana_sta/layer_slopes/products/diag';
 if exist(out_dir,'dir') ~= 7, mkdir(out_dir); end
 
@@ -17,7 +23,7 @@ cice_import
 
 % Native-resolution, surface-flattened, NO conditioning at all.
 G0 = opr_flatten_grid(D, struct('grid_spacing',0.25, 'z_pad_bed',25, ...
-    'smooth_len',0, 'detrend_len',0, 'agc_len',0, ...
+    'z_max', max(zband)+200, 'smooth_len',0, 'detrend_len',0, 'agc_len',0, ...
     'trace_balance',false, 'verbose',true));
 
 fprintf('native dz = %.3f m, grid dz = %.3f m\n', G0.dz_native, G0.grid_spacing);
@@ -25,7 +31,7 @@ fprintf('native dz = %.3f m, grid dz = %.3f m\n', G0.dz_native, G0.grid_spacing)
 % ---- depth-wavelength content of the layering --------------------------
 % Take a mid-depth band well inside the ice, detrend only the very long
 % wavelengths, and look at where the variance lives.
-zi = G0.z >= 150 & G0.z <= 450;
+zi = G0.z >= zband(1) & G0.z <= zband(2);
 band = G0.raw_db(zi,:);
 band = band - mean(band,1);
 nz = size(band,1);
@@ -43,7 +49,7 @@ P = F(half);
 Ps = P(ord);
 cum = cumsum(Ps)/sum(Ps);
 qs = [0.10 0.25 0.50 0.75 0.90];
-fprintf('\ndepth-wavelength distribution of layering variance (150-450 m):\n');
+fprintf('\ndepth-wavelength distribution of variance (%g-%g m):\n', zband(1), zband(2));
 for q = qs
     k = find(cum >= q, 1);
     fprintf('   %3.0f%% of variance below %6.1f m wavelength\n', 100*q, wls(k));
@@ -51,13 +57,22 @@ end
 [~, kpk] = max(Ps);
 fprintf('   peak variance at %.1f m wavelength\n', wls(kpk));
 
+% how much contrast is there to work with?
+hp = G0.raw_db(zi,:) - movmean(G0.raw_db(zi,:), round(10/dz), 1);
+fprintf('\nband-passed contrast (10 m high-pass): std %.2f dB, p5-p95 %.2f to %.2f dB\n', ...
+    std(hp(:),'omitnan'), prctile(hp(:),5), prctile(hp(:),95));
+fprintf('raw dB in band: p5 %.1f  median %.1f  p95 %.1f\n', ...
+    prctile(reshape(G0.raw_db(zi,:),[],1),5), ...
+    median(reshape(G0.raw_db(zi,:),[],1),'omitnan'), ...
+    prctile(reshape(G0.raw_db(zi,:),[],1),95));
+
 % ---- zoom panel at native resolution -----------------------------------
 f = figure('Visible','off','Color','w','Position',[50 50 1700 950]);
 tl = tiledlayout(f,2,2,'TileSpacing','compact','Padding','compact');
 
 ax = nexttile(tl);
-xi = G0.x >= 200 & G0.x <= 700;
-zj = G0.z >= 100 & G0.z <= 300;
+xi = G0.x >= zoom_x(1) & G0.x <= zoom_x(2);
+zj = G0.z >= zoom_z(1) & G0.z <= zoom_z(2);
 imagesc(ax, G0.x(xi), G0.z(zj), G0.raw_db(zj,xi));
 colormap(ax,gray); set(ax,'YDir','reverse');
 clim(ax, prctile(reshape(G0.raw_db(zj,xi),[],1),[5 99]));
@@ -85,6 +100,6 @@ loglog(ax, wls, Ps, 'k-'); grid(ax,'on');
 xlabel(ax,'depth wavelength (m)'); ylabel(ax,'power');
 title(ax,'variance vs depth wavelength');
 
-exportgraphics(f, fullfile(out_dir,'diag_layering.png'), 'Resolution',110);
+exportgraphics(f, fullfile(out_dir,['diag_layering_' tag '.png']), 'Resolution',110);
 close(f);
-fprintf('\nwrote %s\n', fullfile(out_dir,'diag_layering.png'));
+fprintf('\nwrote %s\n', fullfile(out_dir,['diag_layering_' tag '.png']));

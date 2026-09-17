@@ -27,6 +27,13 @@ if numel(product) < 6 || ~strncmp(product,'CSARP_',6)
     return
 end
 
+% Posted products nest as <season>/CSARP_post/CSARP_standard/<day_seg>,
+% so step up once more when the parent is itself a CSARP_ directory.
+[up, parent] = fileparts(root);
+if numel(parent) >= 6 && strncmp(parent,'CSARP_',6)
+    root = up;
+end
+
 name = regexprep(name, '^Data_img_\d+_', 'Data_');
 
 layer_file = fullfile(root, 'CSARP_layer', day_seg, [name ext]);

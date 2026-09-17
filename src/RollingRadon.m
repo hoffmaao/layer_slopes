@@ -39,6 +39,8 @@ pr = 0.1;
 vr = 3;
 % Which radon_ndh optimisation criterion to use (see radon_ndh.m)
 radon_method = 0;
+% Angular step of the Radon dip search (degrees)
+d_theta = 0.1;
 % How far a slope may jump between vertically adjacent cells (degrees)
 variability_thresh = 4;
 
@@ -47,7 +49,7 @@ variability_thresh = 4;
 %%% struct without touching the source.
 if exist('params','var') == 1 && isstruct(params)
     tunable = {'o_f_vertical','o_f_horizontal','snr_thresh','snr_fac', ...
-        'pr','vr','radon_method','variability_thresh'};
+        'pr','vr','radon_method','variability_thresh','d_theta'};
     given = fieldnames(params);
     unknown = setdiff(given, tunable);
     if ~isempty(unknown)
@@ -63,6 +65,7 @@ if exist('params','var') == 1 && isstruct(params)
     if isfield(params,'vr'),                 vr = params.vr; end
     if isfield(params,'radon_method'),       radon_method = params.radon_method; end
     if isfield(params,'variability_thresh'), variability_thresh = params.variability_thresh; end
+    if isfield(params,'d_theta'),            d_theta = params.d_theta; end
 end
 
 
@@ -199,7 +202,7 @@ end
 clearvars -except Data dist data_y Surface Bottom window_size ...
     window_size2 o_f_vertical o_f_horizontal snr_thresh plotter ...
     movie_flag snr_fac max_frequency xstep_roll ystep_roll ...
-    angle_thresh pr vr data_is_power radon_method variability_thresh
+    angle_thresh pr vr data_is_power radon_method variability_thresh d_theta
 
 %%% FIX: use the same wave speed as cice_import rather than a second,
 %%% slightly different hard-coded constant.
@@ -244,8 +247,15 @@ end
 
 
 % This breaks the initial computation into cells smaller
-% than the prescribed value, to save on memory
-overload_factor = 1000;
+% than the prescribed value, to save on memory.
+%
+%%% FIX: the chunk width was a flat 1000 columns regardless of the window.
+%%% A window wider than that makes roll_steps negative below, so `for i =
+%%% 1:roll_steps` never executes, opt_x is never created, and the function
+%%% dies in its own epilogue with "Unrecognized variable 'opt_x'" - having
+%%% silently processed nothing. Long windows are exactly what sub-degree
+%%% dips need, so the chunk has to be sized against the window.
+overload_factor = max(1000, 2*window_size);
 
 if length(Data(1,:)) > overload_factor
     steps = ceil(length(Data(1,:))/overload_factor);
@@ -259,6 +269,15 @@ else
     breaks = [1 length(Data(1,:))+1];
 end
 
+
+%%% ADD: make the empty case explicit rather than letting it fail later
+%%% with a confusing name error.
+if window_size >= length(Data(1,:)) || window_size2 >= length(Data(:,1))
+    error('RollingRadon:windowLargerThanData', ...
+        ['Window is %d x %d samples but the data is %d x %d. No window ' ...
+         'fits.'], window_size, window_size2, ...
+        length(Data(1,:)), length(Data(:,1)));
+end
 
 slope_colors = b2r2(-angle_thresh(1),angle_thresh(2));
 slope_vals = -angle_thresh(1): ...
@@ -312,6 +331,12 @@ for k = 1:steps
     end
     %%% Vertical Steps
     roll_steps2 = round((length(data(:,1))-window_size2)/ystep_roll);
+
+    %%% FIX: a trailing chunk narrower than the window gives a negative
+    %%% step count, which silently skips the chunk. Skip it explicitly.
+    if roll_steps < 1 || roll_steps2 < 1
+        continue
+    end
     
     keep_val = 1;
     
@@ -426,7 +451,7 @@ for k = 1:steps
                     %% Compute the Radon transform
                     [opt_angle(j,i+previous_xsteps) rd trash trash rsnr] = ...
                         radon_ndh(xaxis(start:stop),yaxis(start2:stop2), ...
-                        radon_data,angle_thresh(1),0,radon_method);
+                        radon_data,angle_thresh(1),0,radon_method,d_theta);
                     if isnan(opt_angle(j,i+previous_xsteps)) == 1
                         status_flag(j,i+previous_xsteps) = 2;
                     end
@@ -561,6 +586,12 @@ end
 %%%   0 = solved, 1 = outside the ice column, 2 = SNR too low,
 %%%   3 = slope rejected by the angle threshold or variability filter
 %% Produce the final results image
+if exist('opt_x','var') == 0
+    error('RollingRadon:noWindows', ...
+        ['No window was ever evaluated. The window (%d x %d samples) is ' ...
+         'probably too large for the data (%d x %d).'], ...
+        window_size, window_size2, length(Data(1,:)), length(Data(:,1)));
+end
 zero_inds = find(opt_x ~= 0);
 slope_x = opt_x(zero_inds);
 slope_y = opt_y;

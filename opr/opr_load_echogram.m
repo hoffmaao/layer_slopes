@@ -11,7 +11,8 @@ function D = opr_load_echogram(data_file, opt)
 %   .verbose           default true
 %
 % Returns
-%   .power        [nt x nx] detected power, linear
+%   .power        [nt x nx] detected power, linear (|Data|^2 if complex)
+%   .data_form    char, how .power was derived from the product
 %   .twtt         [nt x 1]  two-way travel time (s)
 %   .dist         [1 x nx]  along-track distance (m)
 %   .x,.y         [1 x nx]  polar stereographic coordinates (m)
@@ -65,7 +66,18 @@ end
 
 D = struct();
 D.data_file = data_file;
-D.power = double(S.Data);
+
+% CSARP_standard / qlook store DETECTED POWER (real). CSARP_standardphase
+% and the polarimetric products keep the complex signal, where power is
+% |Data|^2. Getting this wrong puts the dB scale out by a factor of two,
+% which silently rescales every threshold expressed in dB.
+if isreal(S.Data)
+    D.power = double(S.Data);
+    D.data_form = 'detected power (real)';
+else
+    D.power = double(abs(S.Data)).^2;
+    D.data_form = 'complex signal, converted to |Data|^2';
+end
 D.twtt  = double(S.Time(:));
 D.lat   = double(S.Latitude(:)');
 D.lon   = double(S.Longitude(:)');
@@ -137,6 +149,7 @@ end
 if opt.verbose
     fprintf('  %s\n', data_file);
     fprintf('    %d samples x %d traces, %.0f m along track\n', nt, nx, D.dist(end));
+    fprintf('    data    : %s\n', D.data_form);
     fprintf('    surface : %s\n', D.surface_source);
     fprintf('    bed     : %s (%d/%d finite)\n', ...
         D.bed_source, sum(isfinite(D.bed_twtt)), nx);

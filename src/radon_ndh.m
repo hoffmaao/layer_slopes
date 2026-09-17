@@ -1,4 +1,4 @@
-function [optimum_angle rad_result angles x_rad radon_snr] = radon_ndh(xaxis,yaxis,data,angle_thresh,plotter,method);
+function [optimum_angle rad_result angles x_rad radon_snr] = radon_ndh(xaxis,yaxis,data,angle_thresh,plotter,method,d_theta);
 %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Method Descriptions%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -97,7 +97,13 @@ else
 end
 
 
-d_theta = 0.1;
+%%% ADD: the angular step was hard-coded at 0.1 deg. Englacial layers in
+%%% the interior dip by ~0.1 deg, so the entire signal of interest fitted
+%%% inside a single search increment and every window returned 0 or +/-0.1.
+%%% It is now an argument, defaulting to the original value.
+if exist('d_theta','var') == 0 || isempty(d_theta)
+    d_theta = 0.1;
+end
 
 if time_increases_downward == 1
     %angles = 180-angle_thresh:1:180+angle_thresh; % Left looking, to down looking, to right looking

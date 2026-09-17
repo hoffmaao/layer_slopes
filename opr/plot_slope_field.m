@@ -13,7 +13,8 @@ function fig_file = plot_slope_field(R, out_png, varargin)
 % Options
 %   clim_dip     dip colour limits (deg), default symmetric round the p98
 %   alpha        slope overlay opacity, default 0.55
-%   segments     also draw a dip tick in each solved cell, default true
+%   segments     draw a dip tick in each solved cell; default is to draw
+%                them only when they would be visibly tilted
 %   seg_len      half-length of those ticks (m), default window_x/6
 %   dpi          output resolution, default 150
 %   title_str    optional figure title; empty (the default) draws none
@@ -27,7 +28,7 @@ addpath(fullfile(here,'..','src'));
 
 o.clim_dip = [];
 o.alpha = 0.55;
-o.segments = true;
+o.segments = [];   % default: only when the ticks would be visible
 o.seg_len = [];     % default: scale to the window
 o.dpi = 150;
 o.title_str = '';
@@ -56,11 +57,17 @@ G = opr_flatten_grid(D, struct( ...
     'grid_spacing', R.param.grid_spacing, ...
     'z_pad_bed',    R.param.z_pad_bed, ...
     'z_max',        R.param.z_max, ...
+    'bed_default',  R.param.bed_default, ...
     'detrend_len',  R.param.detrend_len, ...
     'smooth_len',   R.param.smooth_len, ...
     'agc_len',      R.param.agc_len, ...
     'trace_balance',R.param.trace_balance, ...
+    'vert_exag',    R.param.vert_exag, ...
     'verbose',      false));
+
+% Lines run to tens of km; metres force an exponent onto the axis.
+xkm = G.x/1000;
+sxkm = R.slope_x/1000;
 
 dB = G.raw_db;                       % 10*log10(power), surface-flattened
 finite_db = dB(isfinite(dB));
@@ -81,12 +88,12 @@ tl = tiledlayout(fig, 2, 1, 'TileSpacing','compact', 'Padding','compact');
 
 % ---- panel 1: the power image ------------------------------------------
 ax1 = nexttile(tl);
-imagesc(ax1, G.x, G.z, dB);
+imagesc(ax1, xkm, G.z, dB);
 colormap(ax1, gray); clim(ax1, db_lim);
 set(ax1,'YDir','reverse','Layer','top','TickDir','out','Box','on');
 hold(ax1,'on');
 if any(isfinite(G.bed_z))
-    plot(ax1, G.x, G.bed_z, 'r:', 'LineWidth', 1.6);
+    plot(ax1, xkm, G.bed_z, 'r:', 'LineWidth', 1.6);
 end
 ylabel(ax1,'depth (m)');
 set(ax1,'XTickLabel',[]);
@@ -94,40 +101,53 @@ cb1 = colorbar(ax1); cb1.Label.String = 'power (dB)';
 
 % ---- panel 2: slope field over the power image -------------------------
 ax2 = nexttile(tl);
-imagesc(ax2, G.x, G.z, dB);
+imagesc(ax2, xkm, G.z, dB);
 colormap(ax2, gray); clim(ax2, db_lim);
 set(ax2,'YDir','reverse','Layer','top','TickDir','out','Box','on');
 hold(ax2,'on');
 
 % Overlay the dips in their own axes so the two colormaps coexist.
 ax3 = axes('Position', ax2.Position, 'Color','none');
-h = imagesc(ax3, R.slope_x, R.slope_z, R.slopes);
+h = imagesc(ax3, sxkm, R.slope_z, R.slopes);
 set(h, 'AlphaData', isfinite(R.slopes)*o.alpha);
 colormap(ax3, b2r2(o.clim_dip(1), o.clim_dip(2)));
 clim(ax3, o.clim_dip);
 set(ax3,'YDir','reverse','Color','none','XTick',[],'YTick',[],'Box','off');
 hold(ax3,'on');
 
+% A dip tick is only informative if it is actually visible. At interior
+% dips of ~0.1 deg over a window-scaled tick the displacement is a few tens
+% of centimetres against a panel hundreds of metres deep, so the ticks
+% collapse to flat lines and only add clutter. Drop them automatically.
+if isempty(o.segments)
+    if isempty(v)
+        o.segments = false;
+    else
+        rise = o.seg_len*abs(tand(prctile(abs(v),90)));
+        o.segments = rise > 0.01*(max(G.z)-min(G.z));
+    end
+end
+
 if o.segments && ~isempty(v)
     for i = 1:numel(R.slope_x)
         for j = 1:numel(R.slope_z)
             d = R.slopes(j,i);
             if ~isfinite(d), continue; end
-            plot(ax3, R.slope_x(i) + [-1 1]*o.seg_len, ...
+            plot(ax3, sxkm(i) + [-1 1]*o.seg_len/1000, ...
                       R.slope_z(j) + [-1 1]*o.seg_len*tand(d), ...
                  '-', 'Color', [0 0 0 0.7], 'LineWidth', 0.7);
         end
     end
 end
 if any(isfinite(G.bed_z))
-    plot(ax3, G.x, G.bed_z, 'r:', 'LineWidth', 1.6);
+    plot(ax3, xkm, G.bed_z, 'r:', 'LineWidth', 1.6);
 end
 
 linkaxes([ax1 ax2 ax3],'xy');
-xlim(ax1,[min(G.x) max(G.x)]); ylim(ax1,[0 max(G.z)]);
+xlim(ax1,[min(xkm) max(xkm)]); ylim(ax1,[0 max(G.z)]);
 ax3.Position = ax2.Position;
 
-xlabel(ax2,'distance (m)');
+xlabel(ax2,'distance (km)');
 ylabel(ax2,'depth (m)');
 cb2 = colorbar(ax3); cb2.Label.String = 'layer dip (deg)';
 drawnow;
