@@ -12,7 +12,10 @@ function fig_file = plot_slope_field(R, out_png, varargin)
 %
 % Options
 %   clim_dip     dip colour limits (deg), default symmetric round the p98
-%   alpha        slope overlay opacity, default 0.55
+%   alpha        slope overlay opacity, default 0.6
+%   interp       render the field as a continuous raster rather than the
+%                raw window cells, default true
+%   interp_smooth  cells of smoothing applied to that raster, default 3
 %   segments     draw a dip tick in each solved cell; default is to draw
 %                them only when they would be visibly tilted
 %   seg_len      half-length of those ticks (m), default window_x/6
@@ -27,7 +30,10 @@ here = fileparts(mfilename('fullpath'));
 addpath(fullfile(here,'..','src'));
 
 o.clim_dip = [];
-o.alpha = 0.55;
+o.alpha = 0.6;
+o.interp = true;        % render the field as a continuous raster
+o.interp_smooth = [];   % smoothing of that raster; [] scales to the
+                        % window spacing, which is what the banding is
 o.segments = [];   % default: only when the ticks would be visible
 o.seg_len = [];     % default: scale to the window
 o.dpi = 150;
@@ -63,6 +69,8 @@ G = opr_flatten_grid(D, struct( ...
     'agc_len',      R.param.agc_len, ...
     'trace_balance',R.param.trace_balance, ...
     'vert_exag',    R.param.vert_exag, ...
+    'smooth_x',     R.param.smooth_x, ...
+    'exclude_z',    R.param.exclude_z, ...
     'verbose',      false));
 
 % Lines run to tens of km; metres force an exponent onto the axis.
@@ -78,7 +86,16 @@ if isempty(o.clim_dip)
     if isempty(v)
         o.clim_dip = [-5 5];
     else
-        m = max(1, prctile(abs(v), 98));
+        % No fixed floor: interior layers dip a tenth of a degree, and a
+        % hard minimum of +/-1 deg flattens the whole field to one pale
+        % colour. Scale to the data, robustly enough to ignore outliers.
+        m = prctile(abs(v), 95);
+        if ~isfinite(m) || m <= 0
+            m = max(abs(v));
+        end
+        if ~isfinite(m) || m <= 0
+            m = 1;
+        end
         o.clim_dip = [-m m];
     end
 end
@@ -108,8 +125,46 @@ hold(ax2,'on');
 
 % Overlay the dips in their own axes so the two colormaps coexist.
 ax3 = axes('Position', ax2.Position, 'Color','none');
-h = imagesc(ax3, sxkm, R.slope_z, R.slopes);
-set(h, 'AlphaData', isfinite(R.slopes)*o.alpha);
+
+% Rolling windows overlap, so plotting the raw cell grid draws a staircase
+% of rectangles whose edges are an artefact of the window spacing rather
+% than anything in the ice. Interpolating onto a fine grid gives the
+% continuous slope raster of Holschuh et al. (2017, fig. 3), where the
+% gradient itself is the thing being read. Nick's full RollingRadon has
+% interp_method options for this; the public release ships with it off.
+if o.interp && nnz(isfinite(R.slopes)) >= 4 && numel(R.slope_x) >= 2
+    nxq = min(1600, 8*numel(R.slope_x));
+    nzq = min(600, 8*numel(R.slope_z));
+    xq = linspace(min(sxkm), max(sxkm), nxq);
+    zq = linspace(min(R.slope_z), max(R.slope_z), nzq);
+    % Adjacent windows overlap heavily, so their estimates differ slightly
+    % and leave banding at exactly the window spacing. Smooth over one
+    % cell spacing in each direction to remove it without touching the
+    % gradient itself.
+    if isempty(o.interp_smooth)
+        ns_x = max(3, round(nxq/max(1,numel(R.slope_x))));
+        ns_z = max(3, round(nzq/max(1,numel(R.slope_z))));
+    else
+        ns_x = round(o.interp_smooth); ns_z = ns_x;
+    end
+    [SX, SZ] = meshgrid(sxkm, R.slope_z);
+    ok = isfinite(R.slopes);
+    F = scatteredInterpolant(SX(ok), SZ(ok), double(R.slopes(ok)), ...
+        'natural', 'none');
+    [QX, QZ] = meshgrid(xq, zq);
+    S = F(QX, QZ);
+    valid = isfinite(S);
+    if ns_x > 1 || ns_z > 1
+        S = movmean(S, ns_z, 1, 'omitnan');
+        S = movmean(S, ns_x, 2, 'omitnan');
+        S(~valid) = NaN;
+    end
+    h = imagesc(ax3, xq, zq, S);
+    set(h, 'AlphaData', isfinite(S)*o.alpha);
+else
+    h = imagesc(ax3, sxkm, R.slope_z, R.slopes);
+    set(h, 'AlphaData', isfinite(R.slopes)*o.alpha);
+end
 colormap(ax3, b2r2(o.clim_dip(1), o.clim_dip(2)));
 clim(ax3, o.clim_dip);
 set(ax3,'YDir','reverse','Color','none','XTick',[],'YTick',[],'Box','off');

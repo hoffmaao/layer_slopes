@@ -56,23 +56,48 @@ fig_file = fullfile(out_dir, sprintf('slopes_%s_%s.png', pname, frame));
 
 %% ---- depth window -----------------------------------------------------
 % 60-300 m spans the horizons visible in the picker view (0.85-3.2 us).
-if ~exist('z_top','var'), z_top = 60;  end
-if ~exist('z_bot','var'), z_bot = 300; end
+% The first and second pulse returns merge near 75 m on this system, and
+% that band is a strong horizontal feature with no stratigraphic meaning.
+% Rather than starting below it, blank it and solve on both sides: the
+% shallow layering above it is some of the clearest in the profile.
+if ~exist('z_top','var'),     z_top = 28;        end
+if ~exist('z_bot','var'),     z_bot = 300;       end
+if ~exist('exclude_z','var'), exclude_z = [70 88]; end
+if ~exist('window_z','var'),  window_z = 40;     end
+if ~exist('window_x','var'),  window_x = 2000;   end
 
 %% ---- solver settings --------------------------------------------------
 opts = { ...
     'grid_spacing',  0.25, ...  % m vertical; the system resolves 0.53 m
     'vert_exag',     20, ...    % along track at 5 m, near the 5.8 m native
                         ...     % spacing; makes 0.1 deg present as ~2 deg
-    'window_x',      1000, ...  % m; 0.1 deg is 1.7 m of throw across this
-    'window_z',      40, ...    % m (~75 range cells)
+    'window_x',      window_x, ...% m. A 0.1 deg dip throws a layer 3.5 m over
+                        ...     % this, against a 0.53 m range cell. Long
+                        ...     % windows are what make the dip measurable;
+                        ...     % the overlap below buys the detail back.
+    'window_z',      window_z, ...% m. Small enough to fit between the
+                        ...     % surface and the excluded pulse-merge band,
+                        ...     % so the shallow section is solved too.
+    'exclude_z',     exclude_z, ...
     'dip_max',       1, ...     % deg true
     'dip_accept',    0.9, ...   % deg true
     'dip_step',      0.005, ... % deg true; was effectively 0.1 before
     'z_pad_surface', z_top, ...
     'z_max',         z_bot, ...
+    'smooth_x',      250, ...   % m along-track low-pass. Trace-to-trace gain
+                        ...     % changes show up as vertical stripes, and a
+                        ...     % stripe is a strong linear feature the Radon
+                        ...     % will fit. Removing them is nearly free: a
+                        ...     % 0.1 deg layer moves 0.4 m over 250 m, under
+                        ...     % one range cell. This is the single biggest
+                        ...     % lever on how coherent the field looks.
     'smooth_len',    1.5, ...   % m, depth low-pass at the layer scale
-    'detrend_len',   0, ...     % m, no high-pass
+    'detrend_len',   0, ...     % m, no depth high-pass
+    'solver_params', struct( ...
+        'vr', 1, ...            % keep each measurement, do not substitute
+        'snr_thresh', 4, ...
+        'o_f_horizontal', 16, ...  % step the long window finely so the field
+        'o_f_vertical', 12), ...   % is sampled at ~125 m, not ~1 km
     'out_file',      out_file, ...
     'verbose',       true};
 

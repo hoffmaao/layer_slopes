@@ -29,6 +29,11 @@ function R = RollingRadon_OPR(data_file, varargin)
 %   z_max          hard depth cap (m), [] = from the bed pick
 %   bed_default    assumed ice thickness (m) when there is no bed pick,
 %                  default 1500
+%   exclude_z      N x 2 array of depth bands (m) to blank; windows that
+%                  overlap one abstain. Use for the merged pulse return.
+%   smooth_x       along-track low-pass length (m), default 60. Removes
+%                  the vertical striping from trace-to-trace gain changes.
+%                  Nearly free: a 0.1 deg layer moves 0.1 m over 60 m.
 %   smooth_len     depth low-pass length (m), 0 = off, default 1.5.
 %                  Suppresses structure finer than the layering itself.
 %   detrend_len    depth high-pass length (m), 0 = off (the default).
@@ -79,7 +84,9 @@ G = opr_flatten_grid(D, struct( ...
     'grid_spacing', p.grid_spacing, 'z_pad_bed', p.z_pad_bed, ...
     'z_max', p.z_max, 'bed_default', p.bed_default, ...
     'detrend_len', p.detrend_len, ...
-    'smooth_len', p.smooth_len, 'agc_len', p.agc_len, ...
+    'smooth_len', p.smooth_len, 'smooth_x', p.smooth_x, ...
+    'exclude_z', p.exclude_z, ...
+    'agc_len', p.agc_len, ...
     'trace_balance', p.trace_balance, 'vert_exag', p.vert_exag, ...
     'verbose', p.verbose));
 
@@ -267,6 +274,8 @@ p.z_max = [];
 p.bed_default = 1500;   % assumed ice thickness (m) when no bed pick exists
 p.detrend_len = 0;      % depth high-pass OFF by default
 p.smooth_len = 1.5;     % depth low-pass at the layer scale
+p.smooth_x = 60;        % along-track low-pass; kills the vertical striping
+p.exclude_z = [];       % N x 2 depth bands (m) to blank, e.g. pulse merge
 p.agc_len = 0;
 p.trace_balance = true;
 p.layer_file = '';

@@ -108,8 +108,25 @@ the whole image each iteration, it assumes Windows paths, and it calls
 - **Exaggerates vertically.** Interior layers dip ~0.1 deg, which is below
   one range cell of displacement across any tractable window. See
   `vert_exag` under *Choosing the parameters*.
+- **Removes the vertical striping.** Trace-to-trace gain changes draw
+  vertical stripes, and a stripe is a strong linear feature the Radon will
+  fit. `smooth_x` averages them away, and at these dips it is nearly free: a
+  0.1 deg layer moves 0.4 m across 250 m of track, inside one range cell.
+  This is the single biggest lever on how coherent the field looks -
+  along-track continuity improves from 0.130 to 0.010 deg between adjacent
+  cells, and sign consistency from 0.75 to 0.89.
 - **Gates honestly.** The whole window must sit inside the ice column, not
   just its centre, and rejection reasons are returned in `R.status`.
+- **Masks the merged pulse return.** An accumulation radar's first and
+  second pulse returns merge at a fixed range (~75 m here), and that band is
+  a strong horizontal feature with no stratigraphic meaning. `exclude_z`
+  blanks it, so windows overlapping it abstain while the layering above and
+  below is still solved. The shallow section above the band carries some of
+  the clearest layering in the profile.
+- **Plots a continuous raster.** Overlapping windows drawn as raw cells make
+  a staircase of rectangles whose edges come from the window spacing, not
+  the ice. `plot_slope_field` interpolates onto a fine grid for the smooth
+  slope raster of Holschuh et al. (2017, fig. 3).
 
 ---
 
@@ -241,9 +258,15 @@ exaggeration.
 The check that matters is against a real picked profile. On
 `20250108_02_005` the horizon visible in `imb.picker` runs from ~1.85 us at
 0 km to ~1.45 us at 20 km - about 35 m of relief over 20,000 m, a dip of
-**-0.10 deg**. The solver returns a median of **-0.09 deg** (IQR -0.20 to
-+0.01) over 443 solved windows, and the negative sign correctly says the
-layers shallow with increasing distance.
+**-0.10 deg**. The solver returns a median of **-0.10 deg** (IQR -0.15 to
+-0.05) over 1023 solved windows, with the negative sign correctly saying
+the layers shallow with increasing distance, and a median change of
+0.010 deg between adjacent cells.
+
+Solving above and below the excluded pulse-merge band together gives 3934
+cells over 50-195 m depth, and the field resolves coherent lobes of
+alternating dip along track - the structure mega-dune mapping is looking
+for.
 
 ## Output
 

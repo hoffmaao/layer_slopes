@@ -12,6 +12,10 @@ function G = opr_flatten_grid(D, opt)
 %   .smooth_len    low-pass length along depth (m), 0 = off, default 1.5
 %   .detrend_len   high-pass length along depth (m), 0 = off, default 15
 %   .trace_balance equalise traces against each other, default true
+%   .smooth_x      along-track low-pass length (m), 0 = off. Suppresses the
+%                  vertical striping left by trace-to-trace gain changes.
+%   .exclude_z     N x 2 array of [z_start z_end] depth bands (m) to blank,
+%                  e.g. where the first and second pulse returns merge.
 %   .vert_exag     along-track spacing = grid_spacing*vert_exag, presented
 %                  to the solver as isotropic. Default 1.
 %   .agc_len       running-RMS normalisation length (m), 0 = off, default 0
@@ -52,6 +56,8 @@ if ~isfield(opt,'smooth_len'),   opt.smooth_len = 1.5;   end
 if ~isfield(opt,'agc_len'),      opt.agc_len = 0;        end
 if ~isfield(opt,'trace_balance'),opt.trace_balance = true; end
 if ~isfield(opt,'vert_exag'),    opt.vert_exag = 1;      end
+if ~isfield(opt,'smooth_x'),     opt.smooth_x = 0;       end
+if ~isfield(opt,'exclude_z'),    opt.exclude_z = [];     end
 if ~isfield(opt,'verbose'),      opt.verbose = true;     end
 if ~isfield(opt,'c_ice') || isempty(opt.c_ice)
     cice_import
@@ -211,6 +217,24 @@ if opt.trace_balance
     work = work .* (ref./env);
 end
 
+% ALONG-TRACK SMOOTHING. Trace-to-trace gain and coupling changes appear
+% as vertical stripes, and a stripe is a strong linear feature that the
+% Radon will happily fit. Smoothing along track removes them, and at these
+% dips it is close to free: a layer dipping 0.1 deg moves 0.05 m across
+% 30 m of track and 0.17 m across 100 m, both well inside one 0.53 m range
+% cell, so the layer geometry the solver is trying to measure is untouched
+% while the stripes are averaged away.
+if opt.smooth_x > 0
+    nxs = max(1, round(opt.smooth_x/dx));
+    if mod(nxs,2) == 0, nxs = nxs+1; end
+    if nxs > 1
+        work = movmean(work, nxs, 2, 'omitnan');
+    end
+    G.smooth_x_samples = nxs;
+else
+    G.smooth_x_samples = 0;
+end
+
 % Optional running AGC, off by default. If you switch it on, drop
 % solver_params.snr_thresh to match - the gate is amplitude-based.
 if opt.agc_len > 0
@@ -227,6 +251,34 @@ else
 end
 
 G.img = work;
+
+% EXCLUDED DEPTH BANDS. An accumulation radar's first and second pulse
+% returns merge at a fixed range, and the resulting band is a strong
+% horizontal feature that has nothing to do with the stratigraphy. Blanking
+% it to NaN means any window overlapping it abstains rather than fitting
+% the artefact: radon_ndh returns NaN for a window it cannot score, and
+% RollingRadon already records that as "SNR too low" (status 2). Windows
+% wholly above or below the band are unaffected, so the layering on both
+% sides is still solved.
+G.exclude_z = opt.exclude_z;
+if ~isempty(opt.exclude_z)
+    ez = opt.exclude_z;
+    if size(ez,2) ~= 2
+        error('opr_flatten_grid:badExclude', ...
+            'exclude_z must be an N x 2 array of [z_start z_end] in metres.');
+    end
+    nmask = 0;
+    for k = 1:size(ez,1)
+        m = z >= min(ez(k,:)) & z <= max(ez(k,:));
+        G.img(m,:) = NaN;
+        nmask = nmask + nnz(m);
+    end
+    if opt.verbose
+        fprintf('    excluded %d of %d depth samples (%s m)\n', ...
+            nmask, nz, strjoin(arrayfun(@(k) sprintf('%g-%g', ...
+            ez(k,1), ez(k,2)), 1:size(ez,1), 'UniformOutput', false), ', '));
+    end
+end
 
 G.bed_z = interp1(D.dist(:), bed_z(:), x(:), 'linear', NaN).';
 G.surface_z = zeros(1,nx);
