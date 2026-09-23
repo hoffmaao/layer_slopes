@@ -25,6 +25,10 @@ function out_file = window_movie(data_file, out_file, varargin)
 %   stride_x    take every Nth window along a row. Default 1.
 %   stride_z    take every Nth row. Default 1.
 %   delay       seconds per frame. Default 0.2.
+%   semb_thresh semblance gate to mark each window against: a scalar, or
+%               the saved result of ROLLINGRADON_OPR (struct or .mat path),
+%               whose per-depth calibrated gate is then used. Default []:
+%               show the semblance without a verdict.
 %   (plus any conditioning/geometry option of ROLLINGRADON_OPR)
 %
 % See also ROLLINGRADON_OPR, LS_RADON_DIP, LS_ROLLING_RADON
@@ -44,7 +48,7 @@ o.overlap_x = 0.25;     o.overlap_z = 0.25;
 o.smooth_x = 60;        o.smooth_len = 1.5;   o.detrend_len = 30;
 o.trace_balance = true; o.exclude_z = [];
 o.z_pad_surface = 30;   o.z_max = 200;
-o.dip_max = 1;          o.dip_step = 0.005;   o.q_thresh = 1.5;
+o.dip_max = 1;          o.dip_step = 0.005;   o.semb_thresh = [];
 
 for i = 1:2:numel(varargin)
     if ~isfield(o, varargin{i})
@@ -85,6 +89,18 @@ r0 = r0(keep);
 c0 = c0(1:o.stride_x:end);
 r0 = r0(1:o.stride_z:end);
 
+% The gate to judge each window by, if one was given.
+gate = @(z) NaN;
+if ischar(o.semb_thresh) || isstring(o.semb_thresh)
+    o.semb_thresh = load(char(o.semb_thresh), 'slope_z', 'semb_thresh');
+end
+if isstruct(o.semb_thresh)
+    Rg = o.semb_thresh;
+    gate = @(z) interp1(Rg.slope_z(:), Rg.semb_thresh(:), z, 'nearest', Inf);
+elseif ~isempty(o.semb_thresh)
+    gate = @(z) o.semb_thresh;
+end
+
 slope_max_app = min(89, atand(o.vert_exag*tand(o.dip_max)));
 slope_step_app = atand(o.vert_exag*tand(o.dip_step));
 db_lim = prctile(G.raw_db(isfinite(G.raw_db)), [8 99.5]);
@@ -100,12 +116,12 @@ for j = 1:numel(r0)                      % row by row ...
         ci = c0(i):(c0(i)+wx-1);
         win = G.img(ri, ci);
 
-        [sl_app, qv, crit, slope_axis] = ls_radon_dip(win, G.dz, G.dz, ...
+        [sl_app, ~, crit, slope_axis, sb] = ls_radon_dip(win, G.dz, G.dz, ...
             slope_max_app, slope_step_app);
         sl = atand(tand(sl_app)/o.vert_exag);
-        accepted = isfinite(sl) && isfinite(qv) && qv >= o.q_thresh;
+        thr = gate(mean(G.z(ri)));
 
-        f = figure('Visible','off','Color','w','Position',[50 50 1450 880]);
+        f = ls_figure([50 50 1450 880]);
         tl = tiledlayout(f,3,1,'TileSpacing','compact','Padding','compact');
 
         % 1. locator
@@ -130,11 +146,13 @@ for j = 1:numel(r0)                      % row by row ...
                 'c-', 'LineWidth', 2);
         end
         xlabel(ax,'distance in window (km)'); ylabel(ax,'depth (m)');
-        if accepted
-            title(ax, sprintf('slope %+.4f deg   q %.1f   ACCEPTED', sl, qv));
+        if isnan(thr)
+            title(ax, sprintf('slope %+.4f deg   semblance %.2f', sl, sb));
+        elseif isfinite(sl) && sb >= thr
+            title(ax, sprintf('slope %+.4f deg   semblance %.2f   ACCEPTED', sl, sb));
         else
-            title(ax, sprintf('slope %+.4f deg   q %.1f   rejected (q < %.1f)', ...
-                sl, qv, o.q_thresh));
+            title(ax, sprintf('slope %+.4f deg   semblance %.2f   rejected (< %.2f)', ...
+                sl, sb, thr));
         end
 
         % 3. the criterion

@@ -66,7 +66,7 @@ fprintf('raw dB in band: p5 %.1f  median %.1f  p95 %.1f\n', ...
     prctile(reshape(G0.raw_db(zi,:),[],1),95));
 
 % ---- zoom panel at native resolution -----------------------------------
-f = figure('Visible','off','Color','w','Position',[50 50 1700 950]);
+f = ls_figure([50 50 1700 950]);
 tl = tiledlayout(f,2,2,'TileSpacing','compact','Padding','compact');
 
 ax = nexttile(tl);

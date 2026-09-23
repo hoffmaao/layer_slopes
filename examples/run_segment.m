@@ -40,7 +40,7 @@ for k = 1:numel(f)
             'exclude_z', c.exclude_z, ...
             'out_file', c.mat_file, 'verbose', true);
         if make_figs
-            plot_slope_field(R, c.fig_file);
+            plot_slope_field(R, c.fig_file, 'clim_dip', c.clim_dip);
         end
         v = R.slopes(isfinite(R.slopes));
         summary(end+1,:) = {frame, R.grid.x(end)/1000, ...

@@ -40,6 +40,12 @@ cfg.z_top     = 28;
 cfg.z_bot     = 200;
 cfg.exclude_z = [70 88];
 
+% One colour scale for every figure, so frames and segments can be read
+% against each other. Auto-scaling per frame ranged from +/-0.18 to
+% +/-1.0 deg across one season's products, and the same colour meant a
+% five-fold different dip from one figure to the next.
+cfg.clim_dip  = [-0.3 0.3];      % deg
+
 cfg.opts = { ...
     'grid_spacing',  0.25, ...   % m; the system resolves 0.53 m in ice
     'vert_exag',     20, ...     % exact, and 20x fewer pixels per window
@@ -52,7 +58,11 @@ cfg.opts = { ...
     'detrend_len',   30};        % m, depth high-pass
 
 for i = 1:2:numel(varargin)
-    cfg.(varargin{i}) = varargin{i+1};
+    v = varargin{i+1};
+    if isstring(v) && isscalar(v)
+        v = char(v);     % "..." and '...' both work; the paths below index chars
+    end
+    cfg.(char(varargin{i})) = v;
 end
 
 day_seg = cfg.frame(1:11);

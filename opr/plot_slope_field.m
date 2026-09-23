@@ -16,6 +16,11 @@ function fig_file = plot_slope_field(R, out_png, varargin)
 %   interp       render the field as a continuous raster rather than the
 %                raw window cells, default true
 %   interp_smooth  cells of smoothing applied to that raster, default 3
+%   despeckle    draw each solved cell as the median of itself and its
+%                solved neighbours, default true. A single window that
+%                disagrees in sign with all its neighbours otherwise comes
+%                out of the interpolation as a bullseye ringed in white.
+%                Display only: the saved slopes are never changed.
 %   segments     draw a dip tick in each solved cell; default is to draw
 %                them only when they would be visibly tilted
 %   seg_len      half-length of those ticks (m), default window_x/6
@@ -34,6 +39,7 @@ o.alpha = 0.6;
 o.interp = true;        % render the field as a continuous raster
 o.interp_smooth = [];   % smoothing of that raster; [] scales to the
                         % window spacing, which is what the banding is
+o.despeckle = true;
 o.segments = [];   % default: only when the ticks would be visible
 o.seg_len = [];     % default: scale to the window
 o.dpi = 150;
@@ -100,11 +106,16 @@ if isempty(o.clim_dip)
         if ~isfinite(m) || m <= 0
             m = 1;
         end
+        % Round up to 1, 2, 2.5 or 5 times a power of ten, so the scale
+        % ends on a labelled value.
+        p10 = 10^floor(log10(m));
+        c = [1 2 2.5 5 10]*p10;
+        m = c(find(c >= m*(1 - 1e-9), 1));
         o.clim_dip = [-m m];
     end
 end
 
-fig = figure('Visible','off','Color','w','Position',[80 80 1750 1080]);
+fig = ls_figure([80 80 1750 1080]);
 tl = tiledlayout(fig, 2, 1, 'TileSpacing','compact', 'Padding','compact');
 
 % ---- panel 1: the power image ------------------------------------------
@@ -136,7 +147,8 @@ ax3 = axes('Position', ax2.Position, 'Color','none');
 % continuous slope raster of Holschuh et al. (2017, fig. 3), where the
 % gradient itself is the thing being read. Nick's full RollingRadon has
 % interp_method options for this; the public release ships with it off.
-if o.interp && nnz(isfinite(R.slopes)) >= 4 && numel(R.slope_x) >= 2
+if o.interp && nnz(isfinite(R.slopes)) >= 1 && numel(R.slope_x) >= 2 ...
+        && numel(R.slope_z) >= 2
     nxq = min(1600, 8*numel(R.slope_x));
     nzq = min(600, 8*numel(R.slope_z));
     xq = linspace(min(sxkm), max(sxkm), nxq);
@@ -151,20 +163,31 @@ if o.interp && nnz(isfinite(R.slopes)) >= 4 && numel(R.slope_x) >= 2
     else
         ns_x = round(o.interp_smooth); ns_z = ns_x;
     end
-    [SX, SZ] = meshgrid(sxkm, R.slope_z);
+    % Interpolate ONLY between solved neighbours. Value and support are
+    % interpolated separately (normalised convolution) and the raster is
+    % drawn only where there is support, fading out as support falls, so a
+    % gap between solved windows stays a gap. A scattered interpolant over
+    % the convex hull would instead stretch a handful of isolated cells
+    % into streaks kilometres long, which reads as structure that is not in
+    % the data.
     ok = isfinite(R.slopes);
-    F = scatteredInterpolant(SX(ok), SZ(ok), double(R.slopes(ok)), ...
-        'natural', 'none');
-    [QX, QZ] = meshgrid(xq, zq);
-    S = F(QX, QZ);
-    valid = isfinite(S);
-    if ns_x > 1 || ns_z > 1
-        S = movmean(S, ns_z, 1, 'omitnan');
-        S = movmean(S, ns_x, 2, 'omitnan');
-        S(~valid) = NaN;
+    V = double(R.slopes);
+    if o.despeckle
+        V = local_despeckle(V);
     end
+    V(~ok) = 0;
+    [QX, QZ] = meshgrid(xq, zq);
+    Vq = interp2(sxkm, R.slope_z, V, QX, QZ, 'linear', 0);
+    Wq = interp2(sxkm, R.slope_z, double(ok), QX, QZ, 'linear', 0);
+    if ns_x > 1 || ns_z > 1
+        Vq = movmean(movmean(Vq, ns_z, 1), ns_x, 2);
+        Wq = movmean(movmean(Wq, ns_z, 1), ns_x, 2);
+    end
+    S = Vq./Wq;
+    fade = min(1, max(0, (Wq - 0.3)/0.4));     % 0 below 30% support, 1 above 70%
+    S(fade <= 0) = NaN;
     h = imagesc(ax3, xq, zq, S);
-    set(h, 'AlphaData', isfinite(S)*o.alpha);
+    set(h, 'AlphaData', fade*o.alpha);
 else
     h = imagesc(ax3, sxkm, R.slope_z, R.slopes);
     set(h, 'AlphaData', isfinite(R.slopes)*o.alpha);
@@ -209,6 +232,7 @@ ax3.Position = ax2.Position;
 xlabel(ax2,'distance (km)');
 ylabel(ax2,'depth (m)');
 cb2 = colorbar(ax3); cb2.Label.String = 'layer slope (deg)';
+cb2.Ticks = local_ticks(o.clim_dip);
 drawnow;
 cb2.Position([1 3]) = cb1.Position([1 3]);
 cb2.Position([2 4]) = [ax2.Position(2) ax2.Position(4)];
@@ -228,4 +252,42 @@ close(fig);
 
 fig_file = out_png;
 fprintf('  wrote %s\n', out_png);
+end
+
+% ------------------------------------------------------------------------
+function t = local_ticks(lim)
+% Round-number ticks, reaching both ends of the scale whenever a round step
+% allows it. Left to itself MATLAB builds 0.3 as 0.30000000000000004, finds
+% it past a limit of 0.3 and silently drops the top label.
+raw = (lim(2) - lim(1))/6;
+p10 = 10^floor(log10(raw));
+nice = [1 2 2.5 5 10 20]*p10;
+nice = nice(nice >= raw*(1 - 1e-9));
+step = nice(1);
+for k = 1:numel(nice)
+    q = lim/nice(k);
+    if all(abs(q - round(q)) < 1e-9)
+        step = nice(k);
+        break
+    end
+end
+t = round(step*(ceil(lim(1)/step - 1e-9):floor(lim(2)/step + 1e-9)), 12);
+end
+
+function M = local_despeckle(A)
+% Median of each finite cell and its finite 3 x 3 neighbours. Gaps stay
+% gaps: nothing is filled, only isolated outliers are pulled in.
+[n, m] = size(A);
+P = nan(n+2, m+2);
+P(2:end-1, 2:end-1) = A;
+stack = nan(n, m, 9);
+k = 0;
+for di = 0:2
+    for dj = 0:2
+        k = k + 1;
+        stack(:,:,k) = P(1+di:n+di, 1+dj:m+dj);
+    end
+end
+M = median(stack, 3, 'omitnan');
+M(~isfinite(A)) = NaN;
 end
