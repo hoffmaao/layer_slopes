@@ -8,7 +8,7 @@ survey domain: mega-dunes leave a characteristic dipping signature in the
 englacial stratigraphy, so a reliable layer-slope field across many profiles
 is the raw material for locating them and tracking how they move.
 
-The Radon method, and most of the code under `src/`, is Nick Holschuh's:
+The rolling-Radon method is Nick Holschuh's:
 
 > N. Holschuh, B. R. Parizek, R. B. Alley, S. Anandakrishnan (2017),
 > *Decoding ice sheet behavior using englacial layer slopes*,
@@ -106,13 +106,13 @@ Directly:
 ```matlab
 addpath src; addpath opr;
 R = RollingRadon_OPR(data_file, ...
-        'grid_spacing', 0.25, ...   % m; must resolve the range resolution
-        'window_x', 120, ...        % m along track
-        'window_z', 30, ...         % m vertical
-        'dip_max', 12, ...
-        'detrend_len', 10, ...
+        'grid_spacing', 0.25, ...   % m; must resolve the 0.53 m range cell
+        'window_x', 1000, ...       % m along track
+        'window_z', 20, ...         % m vertical
+        'dip_max', 1, ...           % deg; interior layers dip ~0.1 deg
+        'exclude_z', [70 88], ...   % merged pulse return
         'out_file', 'slopes.mat');
-plot_slope_field(R, 'slopes.png');
+plot_slope_field(R, 'slopes.png', 'clim_dip', [-0.3 0.3]);
 ```
 
 ## Test
@@ -121,19 +121,70 @@ plot_slope_field(R, 'slopes.png');
 cd tests && matlab -batch "run_tests"
 ```
 
-`test_sign` pins the dip sign convention against synthetics, `test_regrid`
-covers the unit bug, and `test_opr_units` drives the whole OPR path over a
-synthetic echogram with a known dip - including the all-NaN `Bottom` case.
+`test_sign` pins the dip sign convention against synthetics,
+`test_opr_units` drives the whole OPR path over a synthetic echogram with a
+known dip - including the all-NaN `Bottom` case - `test_vert_exag` covers
+sub-degree recovery, `test_holschuh_regime` runs Nick's published settings
+in the regime they were built for, `test_null_gate` checks that the quality
+gate holds pure speckle to the requested false-alarm rate while admitting
+layering, and `test_search_edge` checks that a slope at the edge of the
+search is withheld rather than reported.
 
 ## Validation
 
-`tests/` covers the sign convention, the `regrid` unit bug, the whole OPR
-path over a synthetic echogram, and sub-degree recovery under vertical
-exaggeration.
+**Synthetic.** `test_holschuh_regime` builds an echogram in the regime
+Holschuh et al. (2017) targeted and runs it with Nick's published settings:
+RMS dip error 0.04 deg, r = 1.000 against truth.
 
-`test_holschuh_regime` builds a synthetic test case and runs it with Nick's own 
-published defaults. It recovers the dip with an **RMS error of 0.07 deg** and correlation
-**r = 1.000** against truth. 
+**Real data.** `tests/validate_horizon.m` tracks a bright reflector trace
+by trace, with no Radon involved, differentiates it, and compares every
+window on the reflector with the reflector's own dip across that window.
+It saves the pick over the echogram so it can be checked by eye first.
+With the settings in `ls_config.m`:
+
+| frame | window_x | windows on horizon | solved | gain | r |
+|---|---|---|---|---|---|
+| 20250108_02_005 | 500 m | 157 | 100% | 1.04 | 0.96 |
+| 20250108_02_005 | 1000 m | 77 | 100% | 1.04 | 0.98 |
+| 20250108_02_005 | 2000 m | 37 | 100% | 1.09 | 0.96 |
+| 20250112_01_008 | 500 m | 157 | 100% | 1.01 | 0.97 |
+| 20250112_01_008 | 1000 m | 77 | 100% | 1.02 | 0.995 |
+| 20250112_01_008 | 2000 m | 37 | 100% | 1.04 | 0.995 |
+
+Gain is the regression slope of the solver on the tracked dip, so 1 means
+the magnitude is right as well as the sign.
+
+```matlab
+validate_horizon('20250112_01_008', 10000, 130)   % frame, seed x (m), seed z (m)
+```
+
+## Quality gate
+
+A window is kept when its **semblance** - the fraction of its energy that
+stacks coherently when every column is shifted along the fitted slope - is
+higher than noise would reach. "Noise" is measured, not assumed: the same
+echogram with every trace shifted in depth by up to +/-`null_jitter` (15 m,
+about two layer spacings), put through the identical conditioning and
+windows. The layers no longer line up, but each trace keeps its own
+statistics and the power envelope stays where it was. The threshold is the
+99th percentile of that noise at each depth (`false_alarm` 0.01), so a
+horizontal feature that is not layering, such as the firn power envelope,
+raises the bar where it occurs rather than passing as layering.
+
+Semblance replaced the Radon peak/median ratio `q`. `q` measures how much
+better the best slope is than the other candidate slopes, and when a window
+cannot resolve slopes much finer than the search range, that ratio stays
+small even over clean layering. On 20250112_01_008, `q` told real windows
+from noise no better than chance at `window_x` 500 m (AUC 0.55), while
+semblance did so at AUC 0.94-0.99 at every window size.
+
+Two things to know when reading a field:
+
+- A sharp horizontal amplitude boundary is genuinely coherent, so windows on
+  it are kept at the boundary's own dip. On accumulation radar, watch the
+  bright-to-dark transition around 150-200 m.
+- Calibration scores the echogram twice, so a run takes about twice as long.
+  Pass a fixed `semb_thresh` to skip it.
 
 ## Output
 
@@ -143,8 +194,11 @@ published defaults. It recovers the dip with an **RMS error of 0.07 deg** and co
 |---|---|
 | `slope_x` | along-track distance of each window centre (m) |
 | `slope_z` | depth below the ice surface of each window centre (m) |
-| `slopes` | layer dip (deg). **Positive = the layer deepens with increasing x.** |
-| `status` | 0 solved, 1 outside ice, 2 low SNR, 3 slope gate |
+| `slopes` | layer dip (deg). **Positive = the layer rises (gets shallower) with increasing x.** |
+| `semb` | semblance along the fitted slope, the quality measure (0-1) |
+| `semb_thresh` | the gate applied at each window row, calibrated against noise |
+| `q` | Radon criterion peak/median, kept as a diagnostic |
+| `status` | 0 solved, 1 outside ice, 2 below the semblance gate, 3 slope gate, 4 best slope at the edge of the search |
 | `lat`, `lon`, `x`, `y` | geolocation of each slope column |
 | `bed_z` | bed depth below surface at each column (m) |
 | `param` | every setting, plus bed/surface provenance and runtime |
@@ -152,9 +206,10 @@ published defaults. It recovers the dip with an **RMS error of 0.07 deg** and co
 ## Layout
 
 ```
-src/      Holschuh functions, with small fixes
-opr/      OPR/CReSIS front end and the standard figure
-examples/ runnable drivers, one per season
-tests/    regression suite, plus diag_layering.m for siting the depth window
+src/      the solver: Radon slope estimator, rolling window, helpers
+opr/      OPR/CReSIS front end, the standard figure, the window movie
+examples/ ls_config and the drivers that read it
+tests/    regression suite, validate_horizon.m, and diag_layering.m for
+          siting the depth window
 docs/     attribution and the upstream README
 ```

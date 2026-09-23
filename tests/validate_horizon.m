@@ -1,134 +1,125 @@
-% VALIDATE_HORIZON  Independent ground truth tracked from the image itself.
+function T = validate_horizon(frame, seed_x, seed_z, varargin)
+% VALIDATE_HORIZON  Check the slope field against a reflector tracked by eye.
 %
-% Andrew's objection: between 6 and 12 km the layering visibly slants upward
-% with distance, so the dip should be clearly negative there, and the solver
-% reports something much smaller. This checks it directly.
+%   T = VALIDATE_HORIZON(frame, seed_x, seed_z)
+%   T = VALIDATE_HORIZON(..., 'window_x', [500 1000 2000], 'out_dir', dir)
 %
-% A slope measurement is taken straight off the echogram with no Radon
-% involved: seed on a reflector, follow it trace by trace under a continuity
-% constraint, smooth, and differentiate. The tracked pick is written out as
-% a figure so it can be confirmed by eye BEFORE it is used as truth - a
-% tracker that jumps between reflectors produces confident nonsense.
+%   frame     OPR frame, e.g. '20250112_01_008' (settings from ls_config)
+%   seed_x    along-track distance of a point on a bright reflector (m)
+%   seed_z    its depth below the surface (m)
 %
-% Then the solver is run in several configurations and compared at the
-% horizon's own depth and distance.
+% Independent ground truth, with no Radon involved: seed on a reflector,
+% follow it trace by trace under a continuity constraint, smooth, and
+% differentiate. The pick is drawn over the echogram and saved, so it can be
+% checked by eye BEFORE it is trusted - a tracker that jumps between
+% reflectors produces confident nonsense.
+%
+% The solver then runs with the settings in LS_CONFIG at each window_x, and
+% each window on the horizon is compared with the horizon's chord dip
+% across that same window, which is what the window actually measures.
+%
+% Returns a table with, per window_x: windows on the horizon, the fraction
+% of them solved, median solver and tracked dip, their median difference,
+% the regression gain of solver on truth, and the correlation.
+%
+% Examples (on the CReSIS servers)
+%   validate_horizon('20250112_01_008', 10000, 130)
+%   validate_horizon('20250108_02_005', 10000, 135)
 
 here = fileparts(mfilename('fullpath'));
-addpath(fullfile(here,'..','src')); addpath(fullfile(here,'..','opr'));
-out_dir = '/kucresis/scratch/hoffmana_sta/layer_slopes/products/diag';
-if exist(out_dir,'dir') ~= 7, mkdir(out_dir); end
+repo = fileparts(here);
+addpath(fullfile(repo,'src'), fullfile(repo,'opr'), fullfile(repo,'examples'));
 
-data_file = ['/kucresis/scratch/dataproducts/opr_data/accum/' ...
-    '2024_Antarctica_Ground2/CSARP_post/CSARP_standard/20250108_02/' ...
-    'Data_20250108_02_005.mat'];
+o.window_x = [500 1000 2000];
+o.out_dir = '';
+o.track_step = 6;          % m, the most the pick may move between traces
+for i = 1:2:numel(varargin)
+    if ~isfield(o, varargin{i})
+        error('validate_horizon:unknownOption','Unknown option "%s".', varargin{i});
+    end
+    o.(varargin{i}) = varargin{i+1};
+end
 
-if ~exist('seed_x','var'), seed_x = 10000; end   % m along track
-if ~exist('seed_z','var'), seed_z = 135;   end   % m depth, on the horizon
+cfg = ls_config('frame', frame);
+if isempty(o.out_dir), o.out_dir = fullfile(cfg.out_dir, 'diag'); end
+if exist(o.out_dir,'dir') ~= 7, mkdir(o.out_dir); end
 
-D = opr_load_echogram(data_file, struct('verbose',false));
-G = opr_flatten_grid(D, struct('grid_spacing',0.25,'z_max',220, ...
-    'smooth_len',0,'detrend_len',0,'agc_len',0,'trace_balance',false, ...
-    'vert_exag',1,'verbose',false));
+% --- track the reflector ------------------------------------------------
+D = opr_load_echogram(cfg.data_file, struct('verbose', false));
+G = opr_flatten_grid(D, struct('grid_spacing',0.25,'vert_exag',20, ...
+    'z_max',seed_z+60,'smooth_len',0,'detrend_len',0,'trace_balance',false, ...
+    'verbose',false));
+dz = G.z(2) - G.z(1);
+dx = G.x(2) - G.x(1);
 
-dz = G.z(2)-G.z(1);
-dx = G.x(2)-G.x(1);
-
-% --- condition for TRACKING only (not for the solver) -------------------
-% Remove the depth power envelope so a reflector is a local maximum rather
-% than merely shallower than its neighbours, and smooth along track so the
-% pick follows the layer instead of speckle.
+% Condition for TRACKING only: remove the depth power envelope so a
+% reflector is a local maximum rather than merely shallower than its
+% neighbours, and smooth along track so the pick follows the layer, not
+% speckle.
 A = G.raw_db;
 A = A - movmean(A, round(30/dz), 1, 'omitnan');
-A = movmean(A, round(200/dx), 2, 'omitnan');
+A = movmean(A, max(1, round(200/dx)), 2, 'omitnan');
 A(~isfinite(A)) = -inf;
 
-% --- seed, then propagate under a continuity constraint -----------------
 [~, c0] = min(abs(G.x - seed_x));
-zwin = 6;                                   % m, max step between traces
-[~, r0] = max(A(abs(G.z - seed_z) <= 8, c0));
-rlo = find(abs(G.z - seed_z) <= 8, 1);
-r0 = rlo + r0 - 1;
-
-nx = numel(G.x);
-ridx = nan(1, nx);
-ridx(c0) = r0;
-step = round(zwin/dz);
-for c = c0+1:nx                             % forwards
-    lo = max(1, ridx(c-1)-step); hi = min(numel(G.z), ridx(c-1)+step);
-    [~, k] = max(A(lo:hi, c)); ridx(c) = lo + k - 1;
+near = find(abs(G.z - seed_z) <= 8);
+[~, k] = max(A(near, c0));
+ridx = nan(1, numel(G.x));
+ridx(c0) = near(k);
+step = round(o.track_step/dz);
+for c = [c0+1:numel(G.x), c0-1:-1:1]
+    prev = ridx(c - sign(c - c0));
+    lo = max(1, prev - step); hi = min(numel(G.z), prev + step);
+    [~, k] = max(A(lo:hi, c));
+    ridx(c) = lo + k - 1;
 end
-for c = c0-1:-1:1                           % backwards
-    lo = max(1, ridx(c+1)-step); hi = min(numel(G.z), ridx(c+1)+step);
-    [~, k] = max(A(lo:hi, c)); ridx(c) = lo + k - 1;
-end
+zpk = movmean(G.z(ridx), max(1, round(500/dx)));   % the layer is smooth
 
-zpk = G.z(ridx);
-zpk_s = movmean(zpk, round(500/dx));        % the layer is smooth; the pick is not
-dip_true = -atand(gradient(zpk_s, dx));     % + = RISES with +x
-
-% --- look at it before believing it -------------------------------------
-f = figure('Visible','off','Color','w','Position',[60 60 1700 800]);
+f = ls_figure([60 60 1700 700]);
 ax = axes(f);
 imagesc(ax, G.x/1000, G.z, G.raw_db); colormap(ax, gray);
 clim(ax, prctile(G.raw_db(isfinite(G.raw_db)), [8 99.5]));
 set(ax,'YDir','reverse'); hold(ax,'on');
-plot(ax, G.x/1000, zpk_s, 'r-', 'LineWidth', 1.6);
+plot(ax, G.x/1000, zpk, 'r-', 'LineWidth', 1.4);
 plot(ax, seed_x/1000, seed_z, 'co', 'MarkerSize', 10, 'LineWidth', 2);
 xlabel(ax,'distance (km)'); ylabel(ax,'depth (m)');
-exportgraphics(f, fullfile(out_dir,'tracked_horizon.png'), 'Resolution',110);
+pick_png = fullfile(o.out_dir, sprintf('horizon_%s.png', frame));
+exportgraphics(f, pick_png, 'Resolution', 110);
 close(f);
+fprintf('%s: horizon %.1f m at %.1f km -> %.1f m at %.1f km (check %s)\n', ...
+    frame, zpk(1), G.x(1)/1000, zpk(end), G.x(end)/1000, pick_png);
 
-fprintf('tracked horizon: %.0f m at 0 km -> %.0f m at %.0f km\n', ...
-    zpk_s(1), zpk_s(end), G.x(end)/1000);
-seg = G.x >= 6000 & G.x <= 12000;
-fprintf('  over 6-12 km: %+.1f m change, mean dip %+.3f deg (%.3f to %.3f)\n', ...
-    zpk_s(find(seg,1,'last')) - zpk_s(find(seg,1)), ...
-    mean(dip_true(seg)), min(dip_true(seg)), max(dip_true(seg)));
-fprintf('  whole line  : mean dip %+.3f deg, range %.3f to %.3f\n', ...
-    mean(dip_true), min(dip_true), max(dip_true));
-fprintf('  wrote %s - CHECK THE PICK BEFORE TRUSTING THE TABLE\n\n', ...
-    fullfile(out_dir,'tracked_horizon.png'));
-
-% --- solver configurations ----------------------------------------------
-base = {'grid_spacing',0.25,'vert_exag',20,'window_x',2000,'window_z',20, ...
-    'dip_max',1,'dip_accept',0.9,'dip_step',0.005, ...
-    'z_pad_surface',30,'z_max',200,'exclude_z',[70 88], ...
-    'smooth_len',1.5, ...
-    'solver_params',struct('o_f_horizontal',4,'o_f_vertical',4, ...
-                           'snr_thresh',2,'snr_fac',1,'vr',1), ...
-    'verbose',false};
-
-cases = { ...
- 'sx250  hp0   tb on  ',      250,       0,        true
- 'sx250  hp20  tb on  ',      250,      20,        true
- 'sx60   hp20  tb on  ',       60,      20,        true
- 'sx0    hp20  tb on  ',        0,      20,        true
- 'sx0    hp20  tb off ',        0,      20,        false
- 'sx0    hp0   tb off ',        0,       0,        false };
-
-fprintf('%-22s %-7s %-9s %-9s %-9s %-7s %s\n', ...
-    'configuration','n','solver','truth','bias','slope','r');
-for i = 1:size(cases,1)
-    evalc(['R = RollingRadon_OPR(data_file, base{:}, ' ...
-      '''smooth_x'',cases{i,2}, ''detrend_len'',cases{i,3}, ' ...
-      '''trace_balance'',cases{i,4});']);
-    sv = []; tv = [];
+% --- compare the solver at each window length -----------------------------
+rows = cell(numel(o.window_x), 8);
+for w = 1:numel(o.window_x)
+    wx = o.window_x(w);
+    opts = cfg.opts;
+    opts{find(strcmp(opts, 'window_x')) + 1} = wx;
+    R = RollingRadon_OPR(cfg.data_file, opts{:}, 'z_pad_surface', cfg.z_top, ...
+        'z_max', cfg.z_bot, 'exclude_z', cfg.exclude_z, 'verbose', false);
+    sv = []; tv = []; n_on = 0;
     for c = 1:numel(R.slope_x)
-        zt = interp1(G.x, zpk_s,   R.slope_x(c), 'linear', NaN);
-        dt = interp1(G.x, dip_true, R.slope_x(c), 'linear', NaN);
-        if ~isfinite(zt) || ~isfinite(dt), continue; end
-        [~, r] = min(abs(R.slope_z - zt));
-        if abs(R.slope_z(r) - zt) > 15, continue; end
+        xa = R.slope_x(c) - wx/2; xb = R.slope_x(c) + wx/2;
+        if xa < G.x(1) || xb > G.x(end), continue; end
+        za = interp1(G.x, zpk, xa); zb = interp1(G.x, zpk, xb);
+        zt = interp1(G.x, zpk, R.slope_x(c));
+        [gap, r] = min(abs(R.slope_z - zt));
+        if gap > R.param.window_z/4 || R.status(r,c) == 1, continue; end
+        n_on = n_on + 1;
         if isfinite(R.slopes(r,c))
-            sv(end+1) = R.slopes(r,c); tv(end+1) = dt; %#ok<AGROW>
+            sv(end+1) = R.slopes(r,c);            %#ok<AGROW>
+            tv(end+1) = -atand((zb - za)/wx);     %#ok<AGROW> + = rises
         end
     end
-    if numel(sv) < 5
-        fprintf('%-22s %-7d  (too few matches)\n', cases{i,1}, numel(sv));
-        continue
+    if numel(sv) >= 5
+        p = polyfit(tv, sv, 1); rr = corr(sv(:), tv(:));
+    else
+        p = [NaN NaN]; rr = NaN;
     end
-    p = polyfit(tv(:), sv(:), 1);           % gain of solver against truth
-    fprintf('%-22s %-7d %-9.3f %-9.3f %-9.3f %-7.2f %.2f\n', ...
-        cases{i,1}, numel(sv), median(sv), median(tv), ...
-        median(sv)-median(tv), p(1), corr(sv(:), tv(:)));
+    rows(w,:) = {wx, n_on, numel(sv)/max(1,n_on), median(sv), median(tv), ...
+        median(sv - tv), p(1), rr};
+end
+T = cell2table(rows, 'VariableNames', {'window_x','on_horizon','solved', ...
+    'solver_med','truth_med','bias_med','gain','r'});
+disp(T);
 end
