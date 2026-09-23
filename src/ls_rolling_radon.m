@@ -12,7 +12,10 @@ function S = ls_rolling_radon(G, p)
 %       .slope_max             search +/- this, in TRUE degrees
 %       .slope_step            search step, in TRUE degrees
 %       .slope_accept          discard results beyond this (true degrees)
-%       .q_thresh              minimum peak/median criterion ratio
+%       .semb_thresh           minimum semblance along the fitted slope:
+%                              a scalar, or one value per window row
+%                              (depth-dependent, as ROLLINGRADON_OPR
+%                              calibrates it). Default 0.
 %       .surface_z, .bed_z     [1 x nx] gates in depth (m)
 %       .whole_window_in_ice   require the full window inside the gates
 %       .verbose
@@ -21,9 +24,11 @@ function S = ls_rolling_radon(G, p)
 %   .slope_x [1 x m]  window centres along track (m)
 %   .slope_z [1 x n]  window centres in depth (m)
 %   .slopes  [n x m]  slope, degrees, POSITIVE = layer RISES with +x
-%   .q       [n x m]  criterion peak/median for each window
-%   .status  [n x m]  0 solved, 1 outside ice, 2 low quality,
-%                     3 rejected by the slope gate
+%   .q       [n x m]  criterion peak/median for each window (diagnostic)
+%   .semb    [n x m]  semblance along the fitted slope, the quality gate
+%   .status  [n x m]  0 solved, 1 outside ice, 2 below the semblance
+%                     gate, 3 rejected by the slope gate, 4 best slope at
+%                     the edge of the search (the true one lies beyond it)
 %
 % The window is rectangular on purpose. On ice-penetrating radar the two
 % dimensions do different jobs: the along-track extent sets the smallest
@@ -37,7 +42,7 @@ function S = ls_rolling_radon(G, p)
 
 if ~isfield(p,'overlap_x') || isempty(p.overlap_x), p.overlap_x = 0.25; end
 if ~isfield(p,'overlap_z') || isempty(p.overlap_z), p.overlap_z = 0.25; end
-if ~isfield(p,'q_thresh')  || isempty(p.q_thresh),  p.q_thresh  = 1.5;  end
+if ~isfield(p,'semb_thresh') || isempty(p.semb_thresh), p.semb_thresh = 0; end
 if ~isfield(p,'slope_accept') || isempty(p.slope_accept)
     p.slope_accept = p.slope_max;
 end
@@ -67,7 +72,16 @@ slope_step_app = atand(ve*tand(p.slope_step));
 
 slopes = nan(numel(r0), numel(c0));
 qq = nan(size(slopes));
+semb = nan(size(slopes));
 status = zeros(size(slopes));
+
+thr = p.semb_thresh(:);
+if isscalar(thr)
+    thr = repmat(thr, numel(r0), 1);
+elseif numel(thr) ~= numel(r0)
+    error('ls_rolling_radon:badThresh', ...
+        'semb_thresh has %d values for %d window rows.', numel(thr), numel(r0));
+end
 
 xc = G.x(c0 + floor(wx/2));
 zc = G.z(r0 + floor(wz/2));
@@ -101,24 +115,34 @@ for i = 1:numel(c0)
         end
 
         win = G.img(ri, ci);
-        [sl_app, q] = ls_radon_dip(win, G.dz, G.dz, ...
+        [sl_app, q, ~, axis_app, sb] = ls_radon_dip(win, G.dz, G.dz, ...
             slope_max_app, slope_step_app);
+        qq(j,i) = q;
+        semb(j,i) = sb;
 
-        if ~isfinite(sl_app) || ~isfinite(q) || q < p.q_thresh
+        if ~isfinite(sl_app) || ~isfinite(sb) || sb < thr(j)
             status(j,i) = 2;
-            qq(j,i) = q;
+            continue
+        end
+
+        % A best slope at either end of the search is not a maximum: the
+        % real one lies beyond the range, so something steeper than any
+        % slope searched for dominates the window - layers steeper than
+        % slope_max, or a coherent instrument artefact (20250108_02_003
+        % carries one that is coherent even in receiver noise).
+        if sl_app <= axis_app(1) + slope_step_app/2 || ...
+                sl_app >= axis_app(end) - slope_step_app/2
+            status(j,i) = 4;
             continue
         end
 
         sl = atand(tand(sl_app)/ve);
         if abs(sl) > p.slope_accept
             status(j,i) = 3;
-            qq(j,i) = q;
             continue
         end
 
         slopes(j,i) = sl;
-        qq(j,i) = q;
     end
     if p.verbose && mod(i, max(1,round(numel(c0)/8))) == 0
         fprintf('    %3.0f%%  %.1f min\n', 100*i/numel(c0), toc(t0)/60);
@@ -130,6 +154,7 @@ S.slope_x = xc(:).';
 S.slope_z = zc(:).';
 S.slopes = slopes;
 S.q = qq;
+S.semb = semb;
 S.status = status;
 S.window_samples = [wx wz];
 S.step_samples = [sx sz];

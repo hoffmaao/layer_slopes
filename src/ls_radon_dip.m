@@ -1,8 +1,8 @@
-function [slope, q, crit, slope_axis] = ls_radon_dip(win, dx, dz, slope_max, slope_step, refine)
+function [slope, q, crit, slope_axis, semb] = ls_radon_dip(win, dx, dz, slope_max, slope_step, refine)
 % LS_RADON_DIP  Dominant layer slope in one window, by Radon transform.
 %
-%   [slope, q, crit, slope_axis] = LS_RADON_DIP(win, dx, dz, slope_max, ...
-%                                               slope_step, refine)
+%   [slope, q, crit, slope_axis, semb] = LS_RADON_DIP(win, dx, dz, ...
+%                                        slope_max, slope_step, refine)
 %
 %   win         [nz x nx] window, rows increasing in DEPTH
 %   dx, dz      sample spacing along track and in depth, same units
@@ -13,10 +13,18 @@ function [slope, q, crit, slope_axis] = ls_radon_dip(win, dx, dz, slope_max, slo
 %   slope       degrees. POSITIVE = the layer RISES (gets shallower) with
 %               increasing x, i.e. d(elevation)/dx - the standard
 %               glaciological sense.
-%   q           peak criterion divided by the median criterion. 1 means no
-%               preferred orientation; coherent layering scores well above.
+%   q           peak criterion divided by the median criterion, kept as a
+%               diagnostic. It compares the best slope with the other
+%               CANDIDATES, so when the window cannot resolve slopes much
+%               finer than the search range it stays small even over clean
+%               layering. It is not a reliable quality measure; semb is.
 %   crit        the criterion at every candidate slope
 %   slope_axis  those candidate slopes
+%   semb        semblance along the fitted slope: the fraction of the
+%               window's energy that stacks coherently when every column is
+%               shifted along that slope. 1 = perfectly continuous layering,
+%               about 1/(independent columns) for noise. Unlike q it does not
+%               depend on how wide the slope search is.
 %
 % METHOD. Projecting the window along a family of directions and taking the
 % direction whose projection has the largest peak is the rolling Radon
@@ -41,7 +49,7 @@ function [slope, q, crit, slope_axis] = ls_radon_dip(win, dx, dz, slope_max, slo
 if nargin < 6 || isempty(refine), refine = true; end
 
 slope_axis = -slope_max:slope_step:slope_max;
-slope = NaN; q = NaN;
+slope = NaN; q = NaN; semb = NaN;
 crit = nan(size(slope_axis));
 
 if ~ismatrix(win) || any(size(win) < 4) || ~any(isfinite(win(:)))
@@ -78,6 +86,7 @@ if s <= 0
     return
 end
 win = win/s;
+win0 = win;
 
 % --- taper to a disc ----------------------------------------------------
 % Without this the window corners dominate the longest chords and the
@@ -148,5 +157,35 @@ if refine && ia > 1 && ia < numel(crit)
             end
         end
     end
+end
+
+if nargout > 4 && isfinite(slope)
+    semb = local_semblance(win0, slope);
+end
+end
+
+function S = local_semblance(win, slope)
+% Shift every column along the slope, stack, and compare the energy of the
+% stack with the energy of the columns. Rows are depth, so a layer that
+% rises with +x sits at a smaller row index further right.
+% Remove each column's mean first: a gain stripe is constant down a column,
+% stacks coherently along ANY slope, and would otherwise count as layering.
+win = win - mean(win, 1);
+[nz, nx] = size(win);
+jc = (nx+1)/2;
+r = (1:nz)';
+acc = zeros(nz,1); en = zeros(nz,1); cnt = zeros(nz,1);
+for j = 1:nx
+    col = interp1(r, win(:,j), r - (j-jc)*tand(slope), 'linear', NaN);
+    ok = isfinite(col);
+    acc(ok) = acc(ok) + col(ok);
+    en(ok) = en(ok) + col(ok).^2;
+    cnt(ok) = cnt(ok) + 1;
+end
+use = cnt >= 0.8*nx;
+if nnz(use) < 3 || sum(en(use)) <= 0
+    S = NaN;
+else
+    S = sum(acc(use).^2 ./ cnt(use)) / sum(en(use));
 end
 end

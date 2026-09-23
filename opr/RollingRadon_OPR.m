@@ -23,13 +23,33 @@ function R = RollingRadon_OPR(data_file, varargin)
 %   dip_max        search +/- this, true degrees, default 1
 %   dip_accept     discard results beyond this, default dip_max
 %   dip_step       search step, true degrees, default 0.005
-%   q_thresh       minimum Radon criterion peak/median ratio, default 2.5.
-%                  Calibrated against a control: white noise put through the
-%                  same conditioning has median q 1.6, and 53-62%% of it
-%                  passes a threshold of 1.5. Real layering on this data
-%                  sits at 2.2-2.6. Note that speckle does not BIAS the
-%                  result - it has no preferred orientation - so a low
-%                  threshold adds scatter rather than a systematic error.
+%   semb_thresh    minimum semblance along the fitted slope. Default []
+%                  calibrates it per depth against noise (see false_alarm);
+%                  a number fixes it everywhere. Semblance is the fraction
+%                  of a window's energy that stacks coherently along the
+%                  fitted slope. It replaced the Radon peak/median ratio q
+%                  as the gate because q measures how much better the best
+%                  slope is than the other CANDIDATES, and when a window
+%                  cannot resolve slopes much finer than the search range
+%                  that ratio is small even over clean layering. On
+%                  20250112_01_008 q separated real windows from noise no
+%                  better than chance at window_x 500 (AUC 0.55); semblance
+%                  did so at AUC 0.94-0.99 at every window size.
+%   false_alarm    when semb_thresh is [], the fraction of noise windows
+%                  allowed through at each depth, default 0.01
+%   null_jitter    the noise the gate is calibrated on is this same
+%                  echogram with every trace shifted in depth by a uniform
+%                  random amount up to +/- this (m), then put through the
+%                  identical conditioning and windows. Default 15 m, about
+%                  two layer spacings on accumulation radar: the layers no
+%                  longer line up across traces, but each trace keeps its
+%                  own statistics and the power envelope stays in place, so
+%                  anything horizontal that is NOT layering (the envelope,
+%                  a system artefact) is present in the noise too and is
+%                  not mistaken for layering. Must exceed the layer spacing.
+%   null_min       noise windows wanted per depth row (pooled with the rows
+%                  either side), default 300. Short frames repeat the noise
+%                  with fresh jitter until they have that many, up to 10x.
 %   z_pad_surface  ignore this far below the surface (m), default 30
 %   z_pad_bed      stop this far above the bed (m), default 25
 %   z_max          hard depth cap (m), [] = from the bed pick
@@ -50,8 +70,12 @@ function R = RollingRadon_OPR(data_file, varargin)
 % Returns a struct R with
 %   .slope_x, .slope_z   window centres (m)
 %   .slopes              [n x m] slope in degrees (see convention above)
-%   .q                   [n x m] Radon criterion peak/median
-%   .status              0 solved, 1 outside ice, 2 low quality, 3 slope gate
+%   .q                   [n x m] Radon criterion peak/median (diagnostic)
+%   .semb                [n x m] semblance along the fitted slope
+%   .semb_thresh         [n x 1] the gate applied at each window row
+%   .status              0 solved, 1 outside ice, 2 below the semblance
+%                        gate, 3 slope gate, 4 best slope at the edge of
+%                        the +/-dip_max search
 %   .lat,.lon,.x,.y      geolocation of each slope column
 %   .bed_z               bed depth at each column (m)
 %   .param               everything needed to reproduce the run
@@ -76,13 +100,14 @@ if ~any(isfinite(D.bed_twtt)) && isempty(p.z_max) && p.verbose
 end
 
 % --- grid ---------------------------------------------------------------
-G = opr_flatten_grid(D, struct( ...
+gopt = struct( ...
     'grid_spacing', p.grid_spacing, 'vert_exag', p.vert_exag, ...
     'z_pad_bed', p.z_pad_bed, 'z_max', p.z_max, ...
     'bed_default', p.bed_default, 'exclude_z', p.exclude_z, ...
     'detrend_len', p.detrend_len, 'smooth_len', p.smooth_len, ...
     'smooth_x', p.smooth_x, 'trace_balance', p.trace_balance, ...
-    'verbose', p.verbose));
+    'verbose', p.verbose);
+G = opr_flatten_grid(D, gopt);
 
 % --- gates --------------------------------------------------------------
 % Where the bed is unpicked, gate on the bottom of the gridded column
@@ -102,14 +127,35 @@ if p.window_z < 10*p.range_resolution
         p.window_z, p.window_z/p.range_resolution);
 end
 
-% --- solve --------------------------------------------------------------
-S = ls_rolling_radon(G, struct( ...
+solver_opt = struct( ...
     'window_x', p.window_x, 'window_z', p.window_z, ...
     'overlap_x', p.overlap_x, 'overlap_z', p.overlap_z, ...
     'slope_max', p.dip_max, 'slope_step', p.dip_step, ...
-    'slope_accept', p.dip_accept, 'q_thresh', p.q_thresh, ...
+    'slope_accept', p.dip_accept, 'semb_thresh', 0, ...
     'surface_z', surf_gate, 'bed_z', bed_gate, ...
-    'whole_window_in_ice', p.full_window_in_ice, 'verbose', p.verbose));
+    'whole_window_in_ice', p.full_window_in_ice, 'verbose', false);
+
+% --- gate calibration ---------------------------------------------------
+% What counts as coherent depends on the window, the conditioning and the
+% depth (the power envelope, a system artefact), so the threshold is
+% measured rather than assumed: score the same echogram with its layering
+% scrambled, window for window, and at each depth admit only what that
+% noise reaches less than false_alarm of the time.
+calibrated = isempty(p.semb_thresh);
+if calibrated
+    [p.semb_thresh, null_info] = local_calibrate(D, gopt, solver_opt, p);
+    if p.verbose
+        t = p.semb_thresh(isfinite(p.semb_thresh));
+        fprintf(['    semblance gate %.2f-%.2f by depth (noise p%g, %d noise ' ...
+            'pass(es), >= %d windows per row)\n'], min(t), max(t), ...
+            100*(1-p.false_alarm), null_info.reps, null_info.min_count);
+    end
+end
+solver_opt.semb_thresh = p.semb_thresh;
+solver_opt.verbose = p.verbose;
+
+% --- solve --------------------------------------------------------------
+S = ls_rolling_radon(G, solver_opt);
 
 % --- assemble -----------------------------------------------------------
 R = struct();
@@ -118,6 +164,8 @@ R.slope_z = S.slope_z;
 R.slopes = S.slopes;
 R.q = S.q;
 R.status = S.status;
+R.semb = S.semb;
+R.semb_thresh = p.semb_thresh(:);
 R.bed_z = interp1(G.x, G.bed_z, S.slope_x, 'linear', NaN);
 R.lat = interp1(D.dist, D.lat, S.slope_x, 'linear', NaN);
 R.lon = interp1(D.dist, D.lon, S.slope_x, 'linear', NaN);
@@ -154,9 +202,31 @@ if p.verbose
     end
     st = R.status(~isfinite(R.slopes));
     n = numel(R.slopes);
-    fprintf('    rejected: %d outside ice (%.0f%%), %d low quality (%.0f%%), %d slope gate (%.0f%%)\n', ...
+    fprintf(['    rejected: %d outside ice (%.0f%%), %d below the gate (%.0f%%), ' ...
+        '%d slope gate (%.0f%%), %d at the search edge (%.0f%%)\n'], ...
         sum(st==1), 100*sum(st==1)/n, sum(st==2), 100*sum(st==2)/n, ...
-        sum(st==3), 100*sum(st==3)/n);
+        sum(st==3), 100*sum(st==3)/n, sum(st==4), 100*sum(st==4)/n);
+end
+
+% A field solved at about the false-alarm rate is indistinguishable from
+% noise, whatever it looks like once plotted. Say so loudly.
+n_in = nnz(R.status ~= 1);
+n_edge = nnz(R.status == 4);
+if n_in > 0 && n_edge/n_in > 0.05
+    warning('RollingRadon_OPR:searchEdge', ...
+        ['%.0f%% of in-ice windows found their best slope at the edge of ' ...
+         'the +/-%g deg search, so something steeper dominates them. If ' ...
+         'the layers really are that steep, raise dip_max; if not, the ' ...
+         'frame carries a coherent artefact - check a band below any ' ...
+         'echo for the same dip.'], 100*n_edge/n_in, p.dip_max);
+end
+if calibrated && n_in > 0 && nfin/n_in < 3*p.false_alarm
+    warning('RollingRadon_OPR:noiseLevel', ...
+        ['Only %.1f%% of in-ice windows passed, against %.1f%% expected ' ...
+         'from noise alone: this field is not distinguishable from noise. ' ...
+         'If layering is visible in the echogram, check the depth band, ' ...
+         'the conditioning, and that null_jitter exceeds the layer spacing.'], ...
+        100*nfin/n_in, 100*p.false_alarm);
 end
 
 % --- save ---------------------------------------------------------------
@@ -180,7 +250,10 @@ p.overlap_z = 0.25;
 p.dip_max = 1;
 p.dip_accept = [];
 p.dip_step = 0.005;
-p.q_thresh = 2.5;
+p.semb_thresh = [];
+p.false_alarm = 0.01;
+p.null_jitter = 15;
+p.null_min = 300;
 p.z_pad_surface = 30;
 p.z_pad_bed = 25;
 p.z_max = [];
@@ -209,6 +282,12 @@ for i = 1:2:numel(varargin)
 end
 
 if isempty(p.dip_accept), p.dip_accept = p.dip_max; end
+if ~(p.false_alarm > 0 && p.false_alarm < 1)
+    error('RollingRadon_OPR:badFalseAlarm','false_alarm must be in (0,1).');
+end
+if p.null_jitter <= 0
+    error('RollingRadon_OPR:badJitter','null_jitter must be positive.');
+end
 if p.dip_accept > p.dip_max
     error('RollingRadon_OPR:badDip', ...
         'dip_accept (%g) cannot exceed dip_max (%g).', p.dip_accept, p.dip_max);
@@ -219,5 +298,58 @@ end
 if p.grid_spacing <= 0 || p.window_x <= 0 || p.window_z <= 0
     error('RollingRadon_OPR:badSize', ...
         'grid_spacing and window sizes must be positive.');
+end
+end
+
+% ------------------------------------------------------------------------
+function [thr, info] = local_calibrate(D, gopt, solver_opt, p)
+% Per-row semblance threshold from jittered copies of the echogram.
+c = ls_cice();
+rs = RandStream('mt19937ar', 'Seed', 3);          % reproducible
+nj = round(2*p.null_jitter/c/median(diff(D.twtt)));
+gopt.verbose = false;
+solver_opt.verbose = false;
+pool = [];                                        % [rows x windows] semb
+for rep = 1:10
+    Dn = D;
+    for n = 1:size(Dn.power, 2)
+        Dn.power(:,n) = circshift(Dn.power(:,n), randi(rs, [-nj nj]));
+    end
+    Sn = ls_rolling_radon(opr_flatten_grid(Dn, gopt), solver_opt);
+    v = Sn.semb;
+    v(Sn.status == 1) = NaN;
+    pool = [pool v]; %#ok<AGROW>
+    cnt = local_pooled_count(isfinite(pool));
+    need = any(isfinite(pool), 2);
+    if all(cnt(need) >= p.null_min), break; end
+end
+nr = size(pool, 1);
+thr = nan(nr, 1);
+for j = 1:nr
+    v = pool(local_rows(j, nr), :);
+    v = v(isfinite(v));
+    if numel(v) >= 30          % fewer than this and the row abstains
+        thr(j) = prctile(v, 100*(1 - p.false_alarm));
+    end
+end
+thr(isnan(thr)) = Inf;
+info.reps = rep;
+info.min_count = min(cnt(need));
+end
+
+function rr = local_rows(j, nr)
+% The row and its two neighbours, shifted inward at the top and bottom of
+% the grid so every row pools the same number of rows. Otherwise the edge
+% rows alone would demand extra noise passes.
+lo = min(max(1, j-1), max(1, nr-2));
+rr = lo:min(nr, lo+2);
+end
+
+function cnt = local_pooled_count(ok)
+n = sum(ok, 2);
+nr = numel(n);
+cnt = zeros(nr, 1);
+for j = 1:nr
+    cnt(j) = sum(n(local_rows(j, nr)));
 end
 end

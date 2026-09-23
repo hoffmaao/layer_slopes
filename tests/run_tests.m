@@ -10,7 +10,8 @@ addpath(here);
 addpath(fullfile(here,'..','src'));
 addpath(fullfile(here,'..','opr'));
 
-tests = {@test_sign, @test_opr_units, @test_vert_exag, @test_holschuh_regime};
+tests = {@test_sign, @test_opr_units, @test_vert_exag, @test_holschuh_regime, ...
+         @test_null_gate, @test_search_edge};
 total = 0;
 
 for i = 1:numel(tests)
