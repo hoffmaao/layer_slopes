@@ -37,8 +37,9 @@ That was a deliberate decision, for three reasons:
    (see below).
 3. Several implementation choices needed to change for this application -
    a variance criterion rather than a peak amplitude, a rectangular window,
-   an explicit angular step - and it is cleaner to own the estimator than to
-   carry a patched copy of someone else's.
+   an explicit angular step, and a quality gate on semblance calibrated
+   against a noise copy of each echogram - and it is cleaner to own the
+   estimator than to carry a patched copy of someone else's.
 
 `test_holschuh_regime.m` checks that the reimplementation still reproduces
 the method in the regime the paper targeted: RDS/impulse radar, 2.8 m range
@@ -62,7 +63,7 @@ numbers between codebases.
 | `src/ls_radon_dip.m` | Written here. Radon slope estimator. |
 | `src/ls_rolling_radon.m` | Written here. Rolling-window driver. |
 | `src/ls_polarstereo_fwd.m` | Written here, from Snyder (1987). |
-| `src/ls_cice.m`, `src/ls_slope_colormap.m` | Written here. |
+| `src/ls_cice.m`, `src/ls_slope_colormap.m`, `src/ls_figure.m` | Written here. |
 | `opr/*` | Written here. OPR/CReSIS front end, figures, diagnostics. |
 | `examples/*`, `tests/*` | Written here. |
 

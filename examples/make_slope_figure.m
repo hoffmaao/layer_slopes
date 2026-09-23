@@ -21,4 +21,4 @@ if exist(cfg.mat_file,'file') ~= 2
         'No result at %s. Run run_slopes first.', cfg.mat_file);
 end
 
-plot_slope_field(cfg.mat_file, cfg.fig_file);
+plot_slope_field(cfg.mat_file, cfg.fig_file, 'clim_dip', cfg.clim_dip);

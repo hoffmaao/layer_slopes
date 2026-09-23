@@ -76,6 +76,7 @@ R = RollingRadon_OPR(f, ...
     'smooth_len',   0, ...        % OFF
     'detrend_len',  0, ...        % OFF
     'trace_balance',false, ...    % OFF
+    'null_jitter',  90, ...       % two layer spacings at 45 m
     'verbose', false);
 
 v = R.slopes(isfinite(R.slopes));

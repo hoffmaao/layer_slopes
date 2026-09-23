@@ -40,15 +40,15 @@ for k = 1:numel(f)
             'exclude_z', c.exclude_z, ...
             'out_file', c.mat_file, 'verbose', true);
         if make_figs
-            plot_slope_field(R, c.fig_file);
+            plot_slope_field(R, c.fig_file, 'clim_dip', c.clim_dip);
         end
         v = R.slopes(isfinite(R.slopes));
         summary(end+1,:) = {frame, R.grid.x(end)/1000, ...
             100*numel(v)/numel(R.slopes), median(v), ...
-            mean(sign(v)==sign(median(v))), R.continuity}; %#ok<AGROW>
+            mean(sign(v)==sign(median(v))), R.continuity}; %#ok<SAGROW>
     catch ME
         fprintf('  SKIPPED: %s\n', ME.message);
-        summary(end+1,:) = {frame, NaN, 0, NaN, NaN, NaN}; %#ok<AGROW>
+        summary(end+1,:) = {frame, NaN, 0, NaN, NaN, NaN}; %#ok<SAGROW>
     end
 end
 
