@@ -146,9 +146,14 @@ if calibrated
     [p.semb_thresh, null_info] = local_calibrate(D, gopt, solver_opt, p);
     if p.verbose
         t = p.semb_thresh(isfinite(p.semb_thresh));
-        fprintf(['    semblance gate %.2f-%.2f by depth (noise p%g, %d noise ' ...
-            'pass(es), >= %d windows per row)\n'], min(t), max(t), ...
-            100*(1-p.false_alarm), null_info.reps, null_info.min_count);
+        if isempty(t)
+            fprintf(['    semblance gate: every row abstains (too few noise ' ...
+                'windows after %d noise pass(es))\n'], null_info.reps);
+        else
+            fprintf(['    semblance gate %.2f-%.2f by depth (noise p%g, %d noise ' ...
+                'pass(es), >= %d windows per row)\n'], min(t), max(t), ...
+                100*(1-p.false_alarm), null_info.reps, null_info.min_count);
+        end
     end
 end
 solver_opt.semb_thresh = p.semb_thresh;
@@ -166,6 +171,9 @@ R.q = S.q;
 R.status = S.status;
 R.semb = S.semb;
 R.semb_thresh = p.semb_thresh(:);
+if isscalar(R.semb_thresh)
+    R.semb_thresh = repmat(R.semb_thresh, numel(S.slope_z), 1);
+end
 R.bed_z = interp1(G.x, G.bed_z, S.slope_x, 'linear', NaN);
 R.lat = interp1(D.dist, D.lat, S.slope_x, 'linear', NaN);
 R.lon = interp1(D.dist, D.lon, S.slope_x, 'linear', NaN);
@@ -183,7 +191,7 @@ R.param.window_samples = S.window_samples;
 R.param.bed_source = D.bed_source;
 R.param.surface_source = D.surface_source;
 R.param.runtime_s = S.runtime_s;
-R.param.created = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
+R.param.created = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
 
 nfin = sum(isfinite(R.slopes(:)));
 R.param.n_solved = nfin;
@@ -306,8 +314,18 @@ function [thr, info] = local_calibrate(D, gopt, solver_opt, p)
 % Per-row semblance threshold from jittered copies of the echogram.
 c = ls_cice();
 rs = RandStream('mt19937ar', 'Seed', 3);          % reproducible
-nj = round(2*p.null_jitter/c/median(diff(D.twtt)));
+dt = median(diff(D.twtt));
+nj = round(2*p.null_jitter/c/dt);
+if nj < 1
+    error('RollingRadon_OPR:badJitter', ...
+        ['null_jitter (%g m) rounds to less than one sample (sample ' ...
+         'spacing %.3g m); the noise copy would be the echogram itself.'], ...
+        p.null_jitter, c*dt/2);
+end
 gopt.verbose = false;
+% The real run already warned about a missing bed pick; say it once.
+ws = warning('off', 'opr_flatten_grid:noBed');
+restore = onCleanup(@() warning(ws));
 solver_opt.verbose = false;
 pool = [];                                        % [rows x windows] semb
 for rep = 1:10

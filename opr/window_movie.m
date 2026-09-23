@@ -29,6 +29,8 @@ function out_file = window_movie(data_file, out_file, varargin)
 %               the saved result of ROLLINGRADON_OPR (struct or .mat path),
 %               whose per-depth calibrated gate is then used. Default []:
 %               show the semblance without a verdict.
+%   dip_accept  mark windows whose slope exceeds this (true degrees) as
+%               rejected, as ROLLINGRADON_OPR does. Default []: no limit.
 %   (plus any conditioning/geometry option of ROLLINGRADON_OPR)
 %
 % See also ROLLINGRADON_OPR, LS_RADON_DIP, LS_ROLLING_RADON
@@ -49,6 +51,7 @@ o.smooth_x = 60;        o.smooth_len = 1.5;   o.detrend_len = 30;
 o.trace_balance = true; o.exclude_z = [];
 o.z_pad_surface = 30;   o.z_max = 200;
 o.dip_max = 1;          o.dip_step = 0.005;   o.semb_thresh = [];
+o.dip_accept = [];
 
 for i = 1:2:numel(varargin)
     if ~isfield(o, varargin{i})
@@ -92,11 +95,21 @@ r0 = r0(1:o.stride_z:end);
 % The gate to judge each window by, if one was given.
 gate = @(z) NaN;
 if ischar(o.semb_thresh) || isstring(o.semb_thresh)
-    o.semb_thresh = load(char(o.semb_thresh), 'slope_z', 'semb_thresh');
+    mf = char(o.semb_thresh);
+    vars = intersect({'slope_z','semb_thresh'}, who('-file', mf));
+    o.semb_thresh = load(mf, vars{:});
 end
 if isstruct(o.semb_thresh)
     Rg = o.semb_thresh;
-    gate = @(z) interp1(Rg.slope_z(:), Rg.semb_thresh(:), z, 'nearest', Inf);
+    if ~isfield(Rg, 'semb_thresh') || isempty(Rg.semb_thresh)
+        % Saved before the gate was stored with the result.
+        warning('window_movie:noGate', ...
+            'The result holds no semblance gate; showing semblance without a verdict.');
+    elseif isscalar(Rg.semb_thresh)
+        gate = @(z) Rg.semb_thresh;
+    else
+        gate = @(z) interp1(Rg.slope_z(:), Rg.semb_thresh(:), z, 'nearest', Inf);
+    end
 elseif ~isempty(o.semb_thresh)
     gate = @(z) o.semb_thresh;
 end
@@ -146,13 +159,21 @@ for j = 1:numel(r0)                      % row by row ...
                 'c-', 'LineWidth', 2);
         end
         xlabel(ax,'distance in window (km)'); ylabel(ax,'depth (m)');
+        % The same verdict, in the same order, as LS_ROLLING_RADON.
         if isnan(thr)
             title(ax, sprintf('slope %+.4f deg   semblance %.2f', sl, sb));
-        elseif isfinite(sl) && sb >= thr
-            title(ax, sprintf('slope %+.4f deg   semblance %.2f   ACCEPTED', sl, sb));
-        else
+        elseif ~isfinite(sl) || ~isfinite(sb) || sb < thr
             title(ax, sprintf('slope %+.4f deg   semblance %.2f   rejected (< %.2f)', ...
                 sl, sb, thr));
+        elseif sl_app <= slope_axis(1) + slope_step_app/2 || ...
+                sl_app >= slope_axis(end) - slope_step_app/2
+            title(ax, sprintf(['slope %+.4f deg   semblance %.2f   ' ...
+                'rejected (best slope at the search edge)'], sl, sb));
+        elseif ~isempty(o.dip_accept) && abs(sl) > o.dip_accept
+            title(ax, sprintf('slope %+.4f deg   semblance %.2f   rejected (|slope| > %g)', ...
+                sl, sb, o.dip_accept));
+        else
+            title(ax, sprintf('slope %+.4f deg   semblance %.2f   ACCEPTED', sl, sb));
         end
 
         % 3. the criterion
