@@ -45,7 +45,7 @@ cd layer_slopes
 ```
 
 Check the install before pointing it at real data. The suite needs no
-external files and runs in a couple of minutes:
+external files and runs in about ten minutes:
 
 ```bash
 cd tests
