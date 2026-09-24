@@ -18,6 +18,9 @@ function S = ls_rolling_radon(G, p)
 %                              calibrates it). Default 0.
 %       .surface_z, .bed_z     [1 x nx] gates in depth (m)
 %       .whole_window_in_ice   require the full window inside the gates
+%       .max_excluded          fraction of a window that may be undefined
+%                              (an excluded band) before it abstains,
+%                              default 0
 %       .verbose
 %
 % Returns
@@ -47,6 +50,7 @@ if ~isfield(p,'slope_accept') || isempty(p.slope_accept)
     p.slope_accept = p.slope_max;
 end
 if ~isfield(p,'whole_window_in_ice'), p.whole_window_in_ice = true; end
+if ~isfield(p,'max_excluded') || isempty(p.max_excluded), p.max_excluded = 0; end
 if ~isfield(p,'verbose'), p.verbose = true; end
 
 [nz, nx] = size(G.img);
@@ -108,7 +112,7 @@ for i = 1:numel(c0)
             else
                 lo = zc(j); hi = zc(j);
             end
-            if ~(lo > sg && hi < bg)
+            if ~(lo >= sg && hi <= bg)
                 status(j,i) = 1;
                 continue
             end
@@ -116,7 +120,7 @@ for i = 1:numel(c0)
 
         win = G.img(ri, ci);
         [sl_app, q, ~, axis_app, sb] = ls_radon_dip(win, G.dz, G.dz, ...
-            slope_max_app, slope_step_app);
+            slope_max_app, slope_step_app, true, 1 - p.max_excluded);
         qq(j,i) = q;
         semb(j,i) = sb;
 

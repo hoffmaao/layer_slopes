@@ -1,14 +1,18 @@
-function [slope, q, crit, slope_axis, semb] = ls_radon_dip(win, dx, dz, slope_max, slope_step, refine)
+function [slope, q, crit, slope_axis, semb] = ls_radon_dip(win, dx, dz, slope_max, slope_step, refine, min_valid)
 % LS_RADON_DIP  Dominant layer slope in one window, by Radon transform.
 %
 %   [slope, q, crit, slope_axis, semb] = LS_RADON_DIP(win, dx, dz, ...
-%                                        slope_max, slope_step, refine)
+%                              slope_max, slope_step, refine, min_valid)
 %
 %   win         [nz x nx] window, rows increasing in DEPTH
 %   dx, dz      sample spacing along track and in depth, same units
 %   slope_max   search +/- this many degrees
 %   slope_step  angular step of the search (degrees)
 %   refine      parabolic refinement of the peak (default true)
+%   min_valid   fraction of the window that must be defined (not NaN) for
+%               a result, default 1. Undefined samples - an excluded depth
+%               band, the edge of the record - are left out of the
+%               projections, their normalisation and the semblance.
 %
 %   slope       degrees. POSITIVE = the layer RISES (gets shallower) with
 %               increasing x, i.e. d(elevation)/dx - the standard
@@ -47,6 +51,7 @@ function [slope, q, crit, slope_axis, semb] = ls_radon_dip(win, dx, dz, slope_ma
 % See also LS_ROLLING_RADON
 
 if nargin < 6 || isempty(refine), refine = true; end
+if nargin < 7 || isempty(min_valid), min_valid = 1; end
 
 slope_axis = -slope_max:slope_step:slope_max;
 slope = NaN; q = NaN; semb = NaN;
@@ -69,24 +74,27 @@ if abs(dx - dz) > 1e-12*max(dx,dz)
 end
 
 win = double(win);
-if any(~isfinite(win(:)))
-    % An excluded band or a record edge landed in this window. The Radon of
-    % a partly undefined window is meaningless, so abstain rather than
-    % silently fitting whatever is left.
+valid = isfinite(win);
+if mean(valid(:)) < min_valid - 1e-12
+    % Too much of the window is undefined - an excluded band or the edge of
+    % the record - for what is left to speak for it. Abstain.
     return
 end
 
 % --- normalise ----------------------------------------------------------
 % Remove the mean so the transform responds to structure rather than to the
 % window's overall brightness, then scale to unit range so the criterion is
-% comparable between windows.
-win = win - mean(win(:));
+% comparable between windows. Undefined samples are set to the mean, which
+% is zero after this, so they add nothing to any projection.
+win = win - mean(win(valid));
+win(~valid) = 0;
 s = max(abs(win(:)));
 if s <= 0
     return
 end
 win = win/s;
 win0 = win;
+win0(~valid) = NaN;       % the semblance skips undefined samples outright
 
 % --- taper to a disc ----------------------------------------------------
 % Without this the window corners dominate the longest chords and the
@@ -96,6 +104,10 @@ win0 = win;
 rr = hypot(XX, ZZ);
 taper = 0.5*(1 + cos(pi*min(1, max(0, (rr-0.7)/0.3))));   % flat, then cosine
 taper(rr >= 1) = 0;
+full = all(valid(:));
+if ~full
+    taper = taper.*valid;     % only defined samples count, in both below
+end
 win = win.*taper;
 
 % --- transform ----------------------------------------------------------
@@ -108,7 +120,11 @@ theta = 90 + slope_axis;
 % Chord-length normalisation: the projection of a uniform disc gives the
 % number of samples contributing to each bin, so dividing by it removes the
 % geometric bias toward directions that cross more of the window.
-Rn = radon(taper, theta);
+if full
+    Rn = local_chord(taper, theta);
+else
+    Rn = radon(taper, theta);
+end
 Rn(Rn < 0.05*max(Rn(:))) = NaN;
 Rc = R./Rn;
 
@@ -170,7 +186,7 @@ function S = local_semblance(win, slope)
 % rises with +x sits at a smaller row index further right.
 % Remove each column's mean first: a gain stripe is constant down a column,
 % stacks coherently along ANY slope, and would otherwise count as layering.
-win = win - mean(win, 1);
+win = win - mean(win, 1, 'omitnan');
 [nz, nx] = size(win);
 jc = (nx+1)/2;
 r = (1:nz)';
@@ -187,5 +203,24 @@ if nnz(use) < 3 || sum(en(use)) <= 0
     S = NaN;
 else
     S = sum(acc(use).^2 ./ cnt(use)) / sum(en(use));
+end
+end
+
+function Rn = local_chord(taper, theta)
+% The chord-length normalisation of a fully defined window depends only on
+% the window size and the slope search, which are the same for every
+% window of a run, so compute it once. It is one of the two transforms per
+% window, and on a tall window the more expensive one to repeat.
+persistent cache
+if isempty(cache)
+    cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+end
+key = sprintf('%d_%d_%.10g_%.10g_%d', size(taper,1), size(taper,2), ...
+    theta(1), theta(end), numel(theta));
+if isKey(cache, key)
+    Rn = cache(key);
+else
+    Rn = radon(taper, theta);
+    cache(key) = Rn;
 end
 end
