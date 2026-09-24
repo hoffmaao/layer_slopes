@@ -17,7 +17,11 @@ function R = RollingRadon_OPR(data_file, varargin)
 %                  to the Radon as isotropic. Multiplies the apparent slope
 %                  by exactly vert_exag, undone on output. Default 20.
 %   window_x       along-track window length (m), default 1000
-%   window_z       vertical window height (m), default 20
+%   window_z       vertical window height (m), default 50. With the default
+%                  grid and vert_exag that is 200 x 200 samples: square in
+%                  the image the Radon sees, as in Holschuh et al. (2017).
+%                  The length sets dip precision; the height stacks layers
+%                  but averages the dip over that much depth.
 %   overlap_x      step between centres as a fraction of the window,
 %   overlap_z      default 0.25 (a quarter window)
 %   dip_max        search +/- this, true degrees, default 1
@@ -47,19 +51,27 @@ function R = RollingRadon_OPR(data_file, varargin)
 %                  anything horizontal that is NOT layering (the envelope,
 %                  a system artefact) is present in the noise too and is
 %                  not mistaken for layering. Must exceed the layer spacing.
-%   null_min       noise windows wanted per depth row (pooled with the rows
-%                  either side), default 300. Short frames repeat the noise
-%                  with fresh jitter until they have that many, up to 10x.
+%   null_min       noise windows wanted per depth row, default 300. A row
+%                  pools with neighbours only within a quarter of the window
+%                  height (at most 15 m), so a tall window's rows each use
+%                  their own; short frames repeat the noise with fresh
+%                  jitter until they have that many, up to 10x.
 %   z_pad_surface  ignore this far below the surface (m), default 30
 %   z_pad_bed      stop this far above the bed (m), default 25
 %   z_max          hard depth cap (m), [] = from the bed pick
 %   bed_default    assumed ice thickness (m) when no bed pick, default 1500
 %   exclude_z      n x 2 depth bands (m) to blank, e.g. a merged pulse return
+%   max_excluded   fraction of a window that may fall in excluded bands;
+%                  those samples are left out, and a window with more than
+%                  this abstains. Default 0.15, so a tall window can span a
+%                  narrow band instead of losing the depths around it.
 %   smooth_x       along-track low-pass (m), default 60
 %   smooth_len     depth low-pass (m), default 1.5
-%   detrend_len    depth high-pass (m), default 30. Removes the
-%                  power-vs-depth gradient, which is horizontal and
-%                  otherwise dominates the window.
+%   detrend_len    depth high-pass (m), default 30: subtracts a local
+%                  least-squares quadratic over this length down each trace.
+%                  Removes the power-vs-depth envelope, including its
+%                  curvature, which is horizontal and otherwise dominates a
+%                  tall window.
 %   trace_balance  equalise traces against each other, default true
 %   full_window_in_ice  require the whole window inside the gates, default true
 %   range_resolution    vertical resolution of the system (m), default 0.53
@@ -133,7 +145,8 @@ solver_opt = struct( ...
     'slope_max', p.dip_max, 'slope_step', p.dip_step, ...
     'slope_accept', p.dip_accept, 'semb_thresh', 0, ...
     'surface_z', surf_gate, 'bed_z', bed_gate, ...
-    'whole_window_in_ice', p.full_window_in_ice, 'verbose', false);
+    'whole_window_in_ice', p.full_window_in_ice, ...
+    'max_excluded', p.max_excluded, 'verbose', false);
 
 % --- gate calibration ---------------------------------------------------
 % What counts as coherent depends on the window, the conditioning and the
@@ -252,7 +265,7 @@ function p = local_options(varargin)
 p.grid_spacing = 0.25;
 p.vert_exag = 20;
 p.window_x = 1000;
-p.window_z = 20;
+p.window_z = 50;
 p.overlap_x = 0.25;
 p.overlap_z = 0.25;
 p.dip_max = 1;
@@ -267,6 +280,7 @@ p.z_pad_bed = 25;
 p.z_max = [];
 p.bed_default = 1500;
 p.exclude_z = [];
+p.max_excluded = 0.15;
 p.smooth_x = 60;
 p.smooth_len = 1.5;
 p.detrend_len = 30;
@@ -328,6 +342,7 @@ ws = warning('off', 'opr_flatten_grid:noBed');
 restore = onCleanup(@() warning(ws));
 solver_opt.verbose = false;
 pool = [];                                        % [rows x windows] semb
+near = [];
 for rep = 1:10
     Dn = D;
     for n = 1:size(Dn.power, 2)
@@ -337,14 +352,25 @@ for rep = 1:10
     v = Sn.semb;
     v(Sn.status == 1) = NaN;
     pool = [pool v]; %#ok<AGROW>
-    cnt = local_pooled_count(isfinite(pool));
+    if isempty(near)
+        % Rows pool their noise with neighbours only within a quarter of
+        % the window height, and never beyond 15 m. Noise statistics change
+        % with depth - across the firn transition they change completely
+        % between two 400 m windows 100 m apart - so a tall window's rows
+        % each stand on their own noise, while the rows of a 20 m or 50 m
+        % window, 5-12.5 m apart and sharing most of their samples, pool
+        % with the rows either side.
+        zc = Sn.slope_z(:);
+        near = abs(zc - zc.') <= min(15, p.window_z/4) + 1e-9;
+    end
+    cnt = double(near)*sum(isfinite(pool), 2);
     need = any(isfinite(pool), 2);
     if all(cnt(need) >= p.null_min), break; end
 end
 nr = size(pool, 1);
 thr = nan(nr, 1);
 for j = 1:nr
-    v = pool(local_rows(j, nr), :);
+    v = pool(near(j,:), :);
     v = v(isfinite(v));
     if numel(v) >= 30          % fewer than this and the row abstains
         thr(j) = prctile(v, 100*(1 - p.false_alarm));
@@ -353,21 +379,4 @@ end
 thr(isnan(thr)) = Inf;
 info.reps = rep;
 info.min_count = min(cnt(need));
-end
-
-function rr = local_rows(j, nr)
-% The row and its two neighbours, shifted inward at the top and bottom of
-% the grid so every row pools the same number of rows. Otherwise the edge
-% rows alone would demand extra noise passes.
-lo = min(max(1, j-1), max(1, nr-2));
-rr = lo:min(nr, lo+2);
-end
-
-function cnt = local_pooled_count(ok)
-n = sum(ok, 2);
-nr = numel(n);
-cnt = zeros(nr, 1);
-for j = 1:nr
-    cnt(j) = sum(n(local_rows(j, nr)));
-end
 end

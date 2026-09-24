@@ -108,9 +108,10 @@ addpath src; addpath opr;
 R = RollingRadon_OPR(data_file, ...
         'grid_spacing', 0.25, ...   % m; must resolve the 0.53 m range cell
         'window_x', 1000, ...       % m along track
-        'window_z', 20, ...         % m vertical
+        'window_z', 50, ...         % m vertical: 200 x 200 samples, square
         'dip_max', 1, ...           % deg; interior layers dip ~0.1 deg
-        'exclude_z', [70 88], ...   % merged pulse return
+        'z_pad_surface', 0, 'z_max', 1500, ...
+        'exclude_z', [0 28; 70 88], ... % surface ringdown, merged pulse return
         'out_file', 'slopes.mat');
 plot_slope_field(R, 'slopes.png', 'clim_dip', [-0.3 0.3]);
 ```
@@ -127,8 +128,10 @@ known dip - including the all-NaN `Bottom` case - `test_vert_exag` covers
 sub-degree recovery, `test_holschuh_regime` runs Nick's published settings
 in the regime they were built for, `test_null_gate` checks that the quality
 gate holds pure speckle to the requested false-alarm rate while admitting
-layering, and `test_search_edge` checks that a slope at the edge of the
-search is withheld rather than reported.
+layering, `test_search_edge` checks that a slope at the edge of the
+search is withheld rather than reported, and `test_excluded_band` checks
+that a window spanning an excluded band loses no more than that much data
+would cost, and that a bright band leaves no edge in the rows beside it.
 
 ## Validation
 
@@ -147,9 +150,13 @@ With the settings in `ls_config.m`:
 | 20250108_02_005 | 500 m | 157 | 100% | 1.04 | 0.96 |
 | 20250108_02_005 | 1000 m | 77 | 100% | 1.04 | 0.98 |
 | 20250108_02_005 | 2000 m | 37 | 100% | 1.09 | 0.96 |
+| 20250108_02_005 | 1000 m x 50 m (default) | 77 | 100% | 1.04 | 0.99 |
 | 20250112_01_008 | 500 m | 157 | 100% | 1.01 | 0.97 |
 | 20250112_01_008 | 1000 m | 77 | 100% | 1.02 | 0.995 |
 | 20250112_01_008 | 2000 m | 37 | 100% | 1.04 | 0.995 |
+| 20250112_01_008 | 1000 m x 50 m (default) | 77 | 100% | 0.98 | 0.99 |
+
+Rows without a height used 20 m windows.
 
 Gain is the regression slope of the solver on the tracked dip, so 1 means
 the magnitude is right as well as the sign.
@@ -157,6 +164,30 @@ the magnitude is right as well as the sign.
 ```matlab
 validate_horizon('20250112_01_008', 10000, 130)   % frame, seed x (m), seed z (m)
 ```
+
+## Windows and depth range
+
+The default window is 1000 m along track by 50 m in depth, 200 x 200
+samples in the image the Radon transform sees: square there, as Holschuh et
+al. (2017) used, in the vertically exaggerated grid this radar needs. It
+runs from the surface to 1500 m. The surface ringdown (0-28 m) and the
+merged pulse return near 75 m are excluded; a window may span them as long
+as no more than `max_excluded` (15%) of it is excluded, and the excluded
+samples are left out rather than fitted.
+
+What the window shape does, against a tracked reflector on two frames:
+
+| window | samples | solved | gain | r | change between adjacent windows |
+|---|---|---|---|---|---|
+| 1000 x 20 m | 200 x 80 | 90-91% | 1.03 | 0.99 | 0.031-0.034 deg |
+| **1000 x 50 m** | **200 x 200** | **94%** | **1.01** | **0.99** | **0.023-0.027 deg** |
+| 400 x 400 m | 80 x 1600 | 99-100% | 0.71 | 0.88 | 0.017-0.021 deg |
+| 200 x 200 m | 40 x 800 | 96% | 0.75 | 0.67 | 0.034-0.043 deg |
+
+The along-track length sets how precisely a dip is measured; height stacks
+more layers onto one estimate but averages the dip over that much depth, so
+a 400 m square in metres reads a shallow reflector 25-35% low. Any shape can
+still be run with `window_x` and `window_z`.
 
 ## Quality gate
 
