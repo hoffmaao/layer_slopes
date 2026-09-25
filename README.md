@@ -119,8 +119,12 @@ plot_slope_field(R, 'slopes.png', 'clim_dip', [-0.3 0.3]);
 ## Test
 
 ```bash
-cd tests && matlab -batch "run_tests"
+bash tests/run_tests.sh      # finds MATLAB on a Mac or the CReSIS servers
 ```
+
+or, with MATLAB on your path, `cd tests && matlab -batch "run_tests"`. The
+no-mistakes gate runs the same script as its test baseline
+(`.no-mistakes.yaml`).
 
 `test_sign` pins the dip sign convention against synthetics,
 `test_opr_units` drives the whole OPR path over a synthetic echogram with a
