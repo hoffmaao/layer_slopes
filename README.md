@@ -171,9 +171,13 @@ The default window is 1000 m along track by 50 m in depth, 200 x 200
 samples in the image the Radon transform sees: square there, as Holschuh et
 al. (2017) used, in the vertically exaggerated grid this radar needs. It
 runs from the surface to 1500 m. The surface ringdown (0-28 m) and the
-merged pulse return near 75 m are excluded; a window may span them as long
-as no more than `max_excluded` (15%) of it is excluded, and the excluded
-samples are left out rather than fitted.
+merged pulse return near 75 m are excluded, and a window may overlap them
+as long as no more than `max_excluded` (15%) of it falls inside; the
+excluded samples are left out rather than fitted. For a 50 m window that
+is 7.5 m, less than the 18 m pulse-merge band, so the default windows only
+clip the edge of a band: those centred between about 25 m and 100 m
+abstain, and the shallowest solved row is centred near 112 m. Taller
+windows can span the band outright.
 
 What the window shape does, against a tracked reflector on two frames:
 
