@@ -10,7 +10,8 @@ function G = opr_flatten_grid(D, opt)
 %   .bed_default   assumed ice thickness (m) when no bed pick exists,
 %                  default 1500
 %   .smooth_len    low-pass length along depth (m), 0 = off, default 1.5
-%   .detrend_len   high-pass length along depth (m), 0 = off, default 15
+%   .detrend_len   high-pass length along depth (m): a local quadratic fit
+%                  over this length is subtracted. 0 = off, default 15
 %   .trace_balance equalise traces against each other, default true
 %   .smooth_x      along-track low-pass length (m), 0 = off. Suppresses the
 %                  vertical striping left by trace-to-trace gain changes.
@@ -184,11 +185,41 @@ G.c_ice = c;
 % the gain structure instead of the stratigraphy.
 work = img;
 
+% EXCLUDED DEPTH BANDS. Some depth bands carry strong horizontal features
+% that are not stratigraphy: the surface ringdown of a ground-based system,
+% and the band where an accumulation radar's first and second pulse returns
+% merge. They are blanked to NaN BEFORE any filtering, and every filter
+% below skips NaN, so a band cannot leak into its neighbours: filtered
+% across it, the depth high-pass subtracts the band's brightness from the
+% rows beside it and leaves a flat edge that a tall window would fit.
+% Windows count only defined samples, and abstain when more than
+% max_excluded of them are blanked (see ROLLINGRADON_OPR).
+G.exclude_z = opt.exclude_z;
+blank = false(nz, 1);
+if ~isempty(opt.exclude_z)
+    ez = opt.exclude_z;
+    if size(ez,2) ~= 2
+        error('opr_flatten_grid:badExclude', ...
+            'exclude_z must be an N x 2 array of [z_start z_end] in metres.');
+    end
+    for k = 1:size(ez,1)
+        blank = blank | (z(:) >= min(ez(k,:)) & z(:) <= max(ez(k,:)));
+    end
+    work(blank,:) = NaN;
+    nmask = nnz(blank);
+    if opt.verbose
+        fprintf('    excluded %d of %d depth samples (%s m)\n', ...
+            nmask, nz, strjoin(arrayfun(@(k) sprintf('%g-%g', ...
+            ez(k,1), ez(k,2)), 1:size(ez,1), 'UniformOutput', false), ', '));
+    end
+end
+
 % low-pass: drop sub-resolution noise
 if opt.smooth_len > 0
     nlo = max(1, round(opt.smooth_len/dz));
     if nlo > 1
         work = movmean(work, nlo, 1, 'omitnan');
+        work(blank,:) = NaN;      % omitnan fills a band's edges; keep it exact
     end
     G.smooth_samples = nlo;
 else
@@ -199,7 +230,7 @@ end
 if opt.detrend_len > 0
     nsm = max(3, round(opt.detrend_len/dz));
     if mod(nsm,2) == 0, nsm = nsm+1; end
-    work = work - movmean(work, nsm, 1, 'omitnan');
+    work = work - local_quadratic_trend(work, nsm);
     G.detrend_samples = nsm;
 else
     G.detrend_samples = 0;
@@ -252,35 +283,8 @@ else
     G.agc_samples = 0;
 end
 
+work(blank,:) = NaN;
 G.img = work;
-
-% EXCLUDED DEPTH BANDS. An accumulation radar's first and second pulse
-% returns merge at a fixed range, and the resulting band is a strong
-% horizontal feature that has nothing to do with the stratigraphy. Blanking
-% it to NaN means any window overlapping it abstains rather than fitting
-% the artefact: LS_RADON_DIP returns NaN for a window it cannot score,
-% RollingRadon already records that as "SNR too low" (status 2). Windows
-% wholly above or below the band are unaffected, so the layering on both
-% sides is still solved.
-G.exclude_z = opt.exclude_z;
-if ~isempty(opt.exclude_z)
-    ez = opt.exclude_z;
-    if size(ez,2) ~= 2
-        error('opr_flatten_grid:badExclude', ...
-            'exclude_z must be an N x 2 array of [z_start z_end] in metres.');
-    end
-    nmask = 0;
-    for k = 1:size(ez,1)
-        m = z >= min(ez(k,:)) & z <= max(ez(k,:));
-        G.img(m,:) = NaN;
-        nmask = nmask + nnz(m);
-    end
-    if opt.verbose
-        fprintf('    excluded %d of %d depth samples (%s m)\n', ...
-            nmask, nz, strjoin(arrayfun(@(k) sprintf('%g-%g', ...
-            ez(k,1), ez(k,2)), 1:size(ez,1), 'UniformOutput', false), ', '));
-    end
-end
 
 G.bed_z = interp1(D.dist(:), bed_z(:), x(:), 'linear', NaN).';
 G.surface_z = zeros(1,nx);
@@ -289,4 +293,34 @@ if opt.verbose
     fprintf('    gridded %d x %d (dz %.2f m, dx %.2f m, vert exag %gx), depth 0-%.0f m, %.0f m along track\n', ...
         nz, nx, dz, dx, opt.vert_exag, z(end), x(end));
 end
+end
+
+% ------------------------------------------------------------------------
+function T = local_quadratic_trend(A, n)
+% Least-squares quadratic through each sample's n-sample neighbourhood down
+% the trace, evaluated at that sample; undefined samples are left out, and
+% at the top and bottom of the grid or beside an excluded band the fit is
+% one-sided. A moving mean is biased wherever the neighbourhood is
+% one-sided, and a moving line cannot follow the curvature of the power
+% envelope - the bright firn falls away by ~25 dB within 50 m near 150-200 m
+% on this radar - and both leave a flat residual. A tall window reads that
+% residual as layering, and so does the noise copy the gate is set from,
+% which then puts the gate above the real data.
+%
+% Moments are taken about each sample (d = offset in samples), so the
+% 3 x 3 normal equations stay well conditioned however deep the grid.
+h = floor(n/2);
+d = (-h:h).';
+ok = isfinite(A);
+w = double(ok);
+y = A;  y(~ok) = 0;
+mom = @(v, k) conv2(v, flipud(d.^k), 'same');     % sum over the window of v.*d.^k
+m0 = mom(w, 0); m1 = mom(w, 1); m2 = mom(w, 2); m3 = mom(w, 3); m4 = mom(w, 4);
+b0 = mom(y, 0); b1 = mom(y, 1); b2 = mom(y, 2);
+det3 = @(a,b,c, e,f,g, i,j,k) a.*(f.*k - g.*j) - b.*(e.*k - g.*i) + c.*(e.*j - f.*i);
+Dm = det3(m0,m1,m2, m1,m2,m3, m2,m3,m4);
+T = det3(b0,m1,m2, b1,m2,m3, b2,m3,m4)./Dm;         % the fit at d = 0
+flat = m0 < 5 | ~(abs(Dm) > 1e-9*abs(m0.*m2.*m4));  % too few points for a curve
+T(flat) = b0(flat)./max(m0(flat), 1);
+T(~ok) = NaN;
 end

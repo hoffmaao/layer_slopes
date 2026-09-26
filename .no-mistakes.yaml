@@ -1,0 +1,8 @@
+# Gate configuration for no-mistakes, see
+# https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+# commands.* are read from the default branch only, so an edit here takes
+# effect once it is merged.
+commands:
+  # The whole MATLAB regression suite, about 12 minutes. It runs first, as
+  # the baseline the test agent then builds on.
+  test: "bash tests/run_tests.sh"

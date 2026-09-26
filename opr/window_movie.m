@@ -45,13 +45,14 @@ o.stride_x = 1;
 o.stride_z = 1;
 o.delay = 0.2;
 o.grid_spacing = 0.25;  o.vert_exag = 20;
-o.window_x = 1000;      o.window_z = 20;
+o.window_x = 1000;      o.window_z = 50;
 o.overlap_x = 0.25;     o.overlap_z = 0.25;
 o.smooth_x = 60;        o.smooth_len = 1.5;   o.detrend_len = 30;
 o.trace_balance = true; o.exclude_z = [];
-o.z_pad_surface = 30;   o.z_max = 200;
+o.z_pad_surface = 30;   o.z_max = 1500;
 o.dip_max = 1;          o.dip_step = 0.005;   o.semb_thresh = [];
 o.dip_accept = [];
+o.max_excluded = 0.15;
 
 for i = 1:2:numel(varargin)
     if ~isfield(o, varargin{i})
@@ -130,7 +131,7 @@ for j = 1:numel(r0)                      % row by row ...
         win = G.img(ri, ci);
 
         [sl_app, ~, crit, slope_axis, sb] = ls_radon_dip(win, G.dz, G.dz, ...
-            slope_max_app, slope_step_app);
+            slope_max_app, slope_step_app, true, 1 - o.max_excluded);
         sl = atand(tand(sl_app)/o.vert_exag);
         thr = gate(mean(G.z(ri)));
 
